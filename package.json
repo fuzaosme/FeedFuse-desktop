@@ -1,0 +1,30 @@
+{
+  "name": "feedfuse-desktop",
+  "private": true,
+  "version": "0.6.0",
+  "description": "英语精读桌面阅读器 — Tauri v2 外壳 + 本地 Node 服务 + SQLite",
+  "packageManager": "pnpm@10.30.3",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @feedfuse/server dev & pnpm --filter @feedfuse/web dev",
+    "dev:server": "pnpm --filter @feedfuse/server dev",
+    "dev:web": "pnpm --filter @feedfuse/web dev",
+    "build:server": "pnpm --filter @feedfuse/server build",
+    "build:web": "pnpm --filter @feedfuse/web build",
+    "build": "pnpm build:server && pnpm build:web",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm --filter @feedfuse/server test",
+    "check": "pnpm typecheck && pnpm test",
+    "fetch-node": "node scripts/fetch-node.mjs",
+    "tauri": "tauri",
+    "tauri:dev": "pnpm build:server && pnpm stage && tauri dev",
+    "tauri:build": "pnpm build && pnpm fetch-node && pnpm stage && tauri build",
+    "stage": "node scripts/stage-sidecar.mjs",
+    "dev:local": "node scripts/dev-local.mjs"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.9.1"
+  }
+}

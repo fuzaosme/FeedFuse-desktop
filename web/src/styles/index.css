@@ -1,0 +1,538 @@
+@import 'tailwindcss';
+@plugin '@tailwindcss/typography';
+
+/*
+ * 主题色（data-accent）= 强调色，和「明暗」（data-theme）是两个独立选项。
+ * 底色、描边、正文颜色始终保持中性，只有强调色和它的浅色派生跟着主题色走：
+ *   --ff-accent          强调色（图标、圆点、描边、焦点环，保证在中性底上看得清）
+ *   --ff-accent-fill     实心填充色（主按钮、开关轨道、选中标签）＝用户选中的那个颜色
+ *   --ff-accent-contrast 填充色上的文字
+ *   --ff-accent-soft    浅底（选中态/提示条）
+ *   --ff-accent-text    浅底上的文字、正文链接
+ *   --ff-vocab-mark     生词标记：强调色再淡一大截；黑白方案用米色
+ * 默认苔绿，未加载设置时的首屏也是它。
+ */
+:root {
+  --ff-bg: #f4f5f7;
+  --ff-surface: #ffffff;
+  --ff-surface-2: #fafbfc;
+  --ff-border: #e3e6ea;
+  --ff-border-strong: #cfd4da;
+  --ff-text: #171a1f;
+  --ff-muted: #6b7280;
+  --ff-faint: #9aa3ad;
+
+  /* 苔绿 #849B87 */
+  --ff-accent: #5c7061;
+  --ff-accent-fill: #849b87;
+  --ff-accent-contrast: #1c2a20;
+  --ff-accent-soft: #e9eee9;
+  --ff-accent-text: #43564a;
+  --ff-vocab-mark: #dee8e0;
+  --ff-vocab-mark-hover: #d2e2d6;
+
+  --ff-danger: #b42318;
+  --ff-danger-soft: #fef3f2;
+  --ff-danger-border: #fecdca;
+  /* warning：被过滤/降级提示用，不能跟 danger 混用——「文章被规则挡掉」不是错误。 */
+  --ff-warning: #b54708;
+  --ff-warning-soft: #fffaeb;
+  --ff-warning-border: #fedf89;
+  --ff-shadow: 0 1px 2px rgb(16 24 40 / 6%), 0 8px 24px rgb(16 24 40 / 6%);
+  --ff-reader-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', sans-serif;
+}
+
+[data-theme='dark'] {
+  --ff-bg: #101216;
+  --ff-surface: #171a1f;
+  --ff-surface-2: #1c2026;
+  --ff-border: #262b33;
+  --ff-border-strong: #343b45;
+  --ff-text: #e7eaee;
+  --ff-muted: #9aa3ad;
+  --ff-faint: #737d88;
+
+  /* 苔绿 #849B87：深色底上提亮，才够看得清 */
+  --ff-accent: #a8beab;
+  --ff-accent-fill: #849b87;
+  --ff-accent-contrast: #101411;
+  --ff-accent-soft: #1e2a23;
+  --ff-accent-text: #bccfc0;
+  --ff-vocab-mark: #22322a;
+  --ff-vocab-mark-hover: #2b3f33;
+
+  --ff-danger: #f97066;
+  --ff-danger-soft: #3b1512;
+  --ff-danger-border: #5f231d;
+  --ff-warning: #fdb022;
+  --ff-warning-soft: #2e2410;
+  --ff-warning-border: #4d3a12;
+  --ff-shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 12px 32px rgb(0 0 0 / 32%);
+}
+
+/* ---------- 黑白：浅色用米色，深色用 #26282B，与其它颜色平级 ---------- */
+[data-theme='light'][data-accent='mono'] {
+  --ff-accent: #6f6656;
+  --ff-accent-fill: #efe6d5;
+  --ff-accent-contrast: #26282b;
+  --ff-accent-soft: #f7f1e4;
+  --ff-accent-text: #4a4235;
+  --ff-vocab-mark: #f3ecdf;
+  --ff-vocab-mark-hover: #ecdfc9;
+}
+
+[data-theme='dark'][data-accent='mono'] {
+  --ff-accent: #d8d2c6;
+  --ff-accent-fill: #26282b;
+  --ff-accent-contrast: #f3ecdf;
+  --ff-accent-soft: #24262a;
+  --ff-accent-text: #e8e2d6;
+  --ff-vocab-mark: #322b20;
+  --ff-vocab-mark-hover: #3e3527;
+}
+
+/* ---------- 雾紫 #A095B8 ---------- */
+[data-theme='light'][data-accent='lilac'] {
+  --ff-accent: #6f6680;
+  --ff-accent-fill: #a095b8;
+  --ff-accent-contrast: #241f2d;
+  --ff-accent-soft: #efeaf3;
+  --ff-accent-text: #544c62;
+  --ff-vocab-mark: #e7e2f0;
+  --ff-vocab-mark-hover: #dcd4ea;
+}
+
+[data-theme='dark'][data-accent='lilac'] {
+  --ff-accent: #c2b8d5;
+  --ff-accent-fill: #a095b8;
+  --ff-accent-contrast: #1b1722;
+  --ff-accent-soft: #241f2c;
+  --ff-accent-text: #d3cae2;
+  --ff-vocab-mark: #2b2538;
+  --ff-vocab-mark-hover: #373044;
+}
+
+/* ---------- 藕粉 #BC929D ---------- */
+[data-theme='light'][data-accent='rose'] {
+  --ff-accent: #8a6670;
+  --ff-accent-fill: #bc929d;
+  --ff-accent-contrast: #2b2024;
+  --ff-accent-soft: #f6edef;
+  --ff-accent-text: #6f5259;
+  --ff-vocab-mark: #f0e0e5;
+  --ff-vocab-mark-hover: #e9d2d9;
+}
+
+[data-theme='dark'][data-accent='rose'] {
+  --ff-accent: #d5b4bc;
+  --ff-accent-fill: #bc929d;
+  --ff-accent-contrast: #241a1d;
+  --ff-accent-soft: #2b2024;
+  --ff-accent-text: #e0c8ce;
+  --ff-vocab-mark: #35252b;
+  --ff-vocab-mark-hover: #422e35;
+}
+
+/* ---------- 雾蓝 #8199B1 ---------- */
+[data-theme='light'][data-accent='mist'] {
+  --ff-accent: #5b6e80;
+  --ff-accent-fill: #8199b1;
+  --ff-accent-contrast: #1d242c;
+  --ff-accent-soft: #e9eef3;
+  --ff-accent-text: #47596a;
+  --ff-vocab-mark: #dfe8f0;
+  --ff-vocab-mark-hover: #d2e0ec;
+}
+
+[data-theme='dark'][data-accent='mist'] {
+  --ff-accent: #abbecf;
+  --ff-accent-fill: #8199b1;
+  --ff-accent-contrast: #10161c;
+  --ff-accent-soft: #1c252d;
+  --ff-accent-text: #c4d3e1;
+  --ff-vocab-mark: #22303d;
+  --ff-vocab-mark-hover: #2c3d4c;
+}
+
+* {
+  border-color: var(--ff-border);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--ff-bg);
+  color: var(--ff-text);
+  font-family: var(--ff-reader-font);
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+}
+
+::selection {
+  background: var(--ff-accent-soft);
+  color: var(--ff-accent-text);
+}
+
+/* 滚动条：桌面端收窄，避免三栏布局里出现粗重的系统滚动条 */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--ff-border-strong);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--ff-faint);
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@layer components {
+  .ff-panel {
+    background: var(--ff-surface);
+    border-color: var(--ff-border);
+  }
+
+  .ff-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.375rem;
+    border-radius: 0.5rem;
+    border: 1px solid var(--ff-border);
+    background: var(--ff-surface);
+    color: var(--ff-text);
+    padding: 0.375rem 0.625rem;
+    font-size: 0.8125rem;
+    line-height: 1.2;
+    transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .ff-btn:hover:not(:disabled) {
+    background: var(--ff-surface-2);
+    border-color: var(--ff-border-strong);
+  }
+  .ff-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .ff-btn-primary {
+    background: var(--ff-accent-fill);
+    border-color: var(--ff-accent-fill);
+    color: var(--ff-accent-contrast);
+    font-weight: 500;
+  }
+  .ff-btn-primary:hover:not(:disabled) {
+    filter: brightness(1.05);
+    background: var(--ff-accent-fill);
+    border-color: var(--ff-accent-fill);
+  }
+  .ff-btn-ghost {
+    border-color: transparent;
+    background: transparent;
+  }
+  .ff-btn-ghost:hover:not(:disabled) {
+    background: var(--ff-surface-2);
+    border-color: var(--ff-border);
+  }
+
+  .ff-input {
+    width: 100%;
+    border-radius: 0.5rem;
+    border: 1px solid var(--ff-border);
+    background: var(--ff-surface);
+    color: var(--ff-text);
+    padding: 0.4375rem 0.625rem;
+    font-size: 0.8125rem;
+    outline: none;
+    transition: border-color 120ms ease, box-shadow 120ms ease;
+  }
+  .ff-input:focus {
+    border-color: var(--ff-accent);
+    box-shadow: 0 0 0 3px var(--ff-accent-soft);
+  }
+
+  .ff-label {
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--ff-muted);
+    margin-bottom: 0.25rem;
+    display: block;
+  }
+
+  .ff-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    border-radius: 999px;
+    padding: 0.125rem 0.5rem;
+    font-size: 0.6875rem;
+    background: var(--ff-surface-2);
+    color: var(--ff-muted);
+    border: 1px solid var(--ff-border);
+  }
+
+  .ff-card {
+    background: var(--ff-surface);
+    border: 1px solid var(--ff-border);
+    border-radius: 0.75rem;
+  }
+
+  .ff-skeleton {
+    background: linear-gradient(90deg, var(--ff-surface-2), var(--ff-border), var(--ff-surface-2));
+    background-size: 200% 100%;
+    animation: ff-shimmer 1.4s ease-in-out infinite;
+    border-radius: 0.375rem;
+  }
+
+  /* 文章正文：只作用于阅读区，避免污染设置面板等其它排版 */
+  .ff-article {
+    --tw-prose-body: var(--ff-text);
+    --tw-prose-headings: var(--ff-text);
+    --tw-prose-links: var(--ff-accent);
+    --tw-prose-bold: var(--ff-text);
+    --tw-prose-counters: var(--ff-muted);
+    --tw-prose-bullets: var(--ff-border-strong);
+    --tw-prose-hr: var(--ff-border);
+    --tw-prose-quotes: var(--ff-muted);
+    --tw-prose-quote-borders: var(--ff-border-strong);
+    --tw-prose-captions: var(--ff-muted);
+    --tw-prose-code: var(--ff-text);
+    --tw-prose-pre-code: var(--ff-text);
+    --tw-prose-pre-bg: var(--ff-surface-2);
+    --tw-prose-th-borders: var(--ff-border-strong);
+    --tw-prose-td-borders: var(--ff-border);
+    font-size: var(--ff-article-size, 1rem);
+    line-height: var(--ff-article-leading, 1.75);
+  }
+  .ff-article :where(img, video, iframe) {
+    border-radius: 0.5rem;
+    max-width: 100%;
+    height: auto;
+  }
+  .ff-article :where(figure) {
+    margin: 1.5rem 0;
+  }
+  .ff-article :where(pre) {
+    border: 1px solid var(--ff-border);
+    border-radius: 0.5rem;
+    font-size: 0.8125rem;
+  }
+  .ff-article :where(a) {
+    text-decoration-thickness: 1px;
+    text-underline-offset: 2px;
+  }
+  .ff-article :where(h1, h2, h3, h4) {
+    scroll-margin-top: 1rem;
+  }
+  .ff-translation {
+    margin: -0.5rem 0 1rem;
+    padding: 0.5rem 0.75rem;
+    border-left: 2px solid var(--ff-accent);
+    background: var(--ff-accent-soft);
+    color: var(--ff-accent-text);
+    border-radius: 0 0.375rem 0.375rem 0;
+    font-size: 0.9375em;
+    line-height: 1.7;
+  }
+}
+
+:where(button, a, input, textarea, select, [role='switch']):focus-visible {
+  outline: 2px solid var(--ff-accent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+:where(button, a, [role='switch']):focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* 列表项本身已有背景 + 左侧色条表示选中，再叠外框会显得脏 */
+section ul li > button:focus-visible {
+  outline: none;
+}
+
+@keyframes ff-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+@keyframes ff-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.ff-fade-in {
+  animation: ff-fade-in 160ms ease-out both;
+}
+
+
+/* 正文排版：不受 typography 插件 layer 影响地接管文字颜色与行宽。
+   - 深色模式下插件默认的 --tw-prose-body 仍是浅色主题的灰，会直接变成"灰字黑底"。
+   - 行宽限制在 45rem，避免宽屏下单行过长影响阅读节奏。 */
+.ff-article {
+  color: var(--ff-text);
+  /* 只限宽、不居中：阅读区标题与工具条都是左对齐，正文居中会显得错位 */
+  max-width: 45rem;
+}
+
+.ff-article :where(p, li, td, th, dd, dt, blockquote, figcaption, h1, h2, h3, h4, h5, h6) {
+  color: var(--ff-text);
+}
+
+.ff-article :where(strong, b) {
+  color: var(--ff-text);
+  font-weight: 600;
+}
+
+.ff-article :where(a) {
+  color: var(--ff-accent);
+}
+
+.ff-article :where(blockquote) {
+  color: var(--ff-muted);
+  border-left-color: var(--ff-border-strong);
+}
+
+.ff-article :where(figcaption, small) {
+  color: var(--ff-faint);
+}
+
+.ff-article :where(hr) {
+  border-color: var(--ff-border);
+}
+
+.ff-article :where(code) {
+  background: var(--ff-surface-2);
+  color: var(--ff-text);
+  padding: 0.1em 0.3em;
+  border-radius: 4px;
+  font-size: 0.875em;
+}
+
+.ff-article :where(pre code) {
+  background: transparent;
+  padding: 0;
+}
+
+/* 正文里的生词标记。
+   - 只给一层很淡的底色（取当前主题色再淡一档，黑白方案是米色），不加下划线：
+     正文仍然以文字为主，标记只是「这个词我收过」的提示；
+   - 跨行的词组按片段各自着色，不会出现半截色块；
+   - 悬停加深一层，点击弹出释义浮层。 */
+.ff-vocabulary-word {
+  cursor: pointer;
+  border-radius: 0.25em;
+  padding: 0.02em 0.12em;
+  margin-inline: -0.02em;
+  background-color: var(--ff-vocab-mark);
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  transition: background-color 150ms ease;
+}
+
+.ff-vocabulary-word:hover,
+.ff-vocabulary-word:focus-visible {
+  background-color: var(--ff-vocab-mark-hover);
+  outline: none;
+}
+
+
+/* ---------------------------- 词典 HTML 释义 ---------------------------- */
+/* MDict / 部分 StarDict 的释义是带表格和图片的 HTML，原样式表来自 .mdd，
+   这里只做「塞进词卡不撑破」的收敛：图片限高、表格可横滚、标题降级为正文。 */
+.ff-dict-html {
+  overflow-x: auto;
+  overflow-wrap: anywhere;
+}
+
+.ff-dict-html p,
+.ff-dict-html div {
+  margin: 0.15em 0;
+}
+
+.ff-dict-html h1,
+.ff-dict-html h2,
+.ff-dict-html h3,
+.ff-dict-html h4,
+.ff-dict-html h5,
+.ff-dict-html h6 {
+  font-size: 1em;
+  font-weight: 600;
+  margin: 0.3em 0 0.15em;
+}
+
+.ff-dict-html ul,
+.ff-dict-html ol {
+  margin: 0.15em 0;
+  padding-left: 1.15em;
+  list-style: disc;
+}
+
+.ff-dict-html ol {
+  list-style: decimal;
+}
+
+.ff-dict-html li {
+  margin: 0.1em 0;
+}
+
+.ff-dict-html img {
+  display: inline-block;
+  max-width: 100%;
+  max-height: 110px;
+  vertical-align: middle;
+}
+
+.ff-dict-html table {
+  border-collapse: collapse;
+  font-size: 0.95em;
+  margin: 0.3em 0;
+}
+
+.ff-dict-html td,
+.ff-dict-html th {
+  border: 1px solid var(--ff-border);
+  padding: 0.15em 0.4em;
+}
+
+.ff-dict-html a {
+  color: var(--ff-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.ff-dict-html sup,
+.ff-dict-html sub {
+  font-size: 0.75em;
+  line-height: 0;
+}
+
+.ff-dict-html blockquote {
+  margin: 0.3em 0;
+  padding-left: 0.6em;
+  border-left: 2px solid var(--ff-border);
+  color: var(--ff-muted);
+}

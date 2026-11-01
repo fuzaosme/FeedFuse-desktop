@@ -1,0 +1,12 @@
+# cargo 构建产物
+/target
+
+# tauri 生成的权限 schema
+/gen/schemas
+
+# fetch-node.mjs 下载的 node 可执行文件（约 100 MB，不入库）
+/binaries/node-*
+
+# 打包前从 server/web 拷进来的产物
+/resources/server
+/resources/web
