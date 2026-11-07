@@ -25,7 +25,7 @@ import {
 import { readLearningSelection, type LearningSelection } from './selection';
 
 export interface LearningCardState {
-  /** 卡片稳定标识：一次选区可能生成多张卡片，收起某一张时不能打乱其它卡片的在途请求。 */
+  /** 卡片稳定标识：重试、详细解释与保存都按 id 定位这一张卡。 */
   id: number;
   selection: LearningSelection;
   /** 这张卡片实际查询、展示和收藏的整词；句子卡片不使用。 */
@@ -34,8 +34,7 @@ export interface LearningCardState {
   kind: 'word' | 'sentence';
   loading: boolean;
   dictionary: DictionaryResult | null;
-  /** 词组未收录后的处理也用于查询失败后的重试。 */
-  phraseFallback?: { terms: string[]; explainOnMiss: boolean };
+  /** 词典未收录后由 AI 兜底的讲解；单词卡也用这块展示。 */
   explanation: string;
   error: string;
   missingConfig: boolean;
@@ -80,6 +79,8 @@ export function useEnglishLearning({ articleId, contentRef, titleRef, contentHtm
   const detailControllers = useRef(new Map<number, AbortController>());
   // 保存单词走独立控制器：绝不能覆盖 controllers 里同卡的讲解请求。
   const saveControllers = useRef(new Map<number, AbortController>());
+  // 每张单词卡的扩词计划：重试时沿用同一组候选，不必重新解析选区。
+  const lookupPlans = useRef(new Map<number, LookupPlan>());
   const selectionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastPointerType = useRef('');
   const cache = useRef(new Map<string, string>());
@@ -97,6 +98,7 @@ export function useEnglishLearning({ articleId, contentRef, titleRef, contentHtm
     detailControllers.current.clear();
     for (const controller of saveControllers.current.values()) controller.abort();
     saveControllers.current.clear();
+    lookupPlans.current.clear();
   }, []);
 
   const close = useCallback(() => {
@@ -107,7 +109,7 @@ export function useEnglishLearning({ articleId, contentRef, titleRef, contentHtm
     commit([]);
   }, [abortAll, commit]);
 
-  /** 只收起一张卡片，其余卡片（含在途请求）保持不动。 */
+  /** 收起当前卡片（同一次选区只剩一张）并中断它的全部在途请求。 */
   const closeCard = useCallback((id: number) => {
     if (!cardsRef.current.some((card) => card.id === id)) return;
     controllers.current.get(id)?.abort();
@@ -116,6 +118,7 @@ export function useEnglishLearning({ articleId, contentRef, titleRef, contentHtm
     detailControllers.current.delete(id);
     saveControllers.current.get(id)?.abort();
     saveControllers.current.delete(id);
+    lookupPlans.current.delete(id);
     commit(cardsRef.current.filter((card) => card.id !== id));
   }, [commit]);
 
@@ -145,6 +148,8 @@ export function useEnglishLearning({ articleId, contentRef, titleRef, contentHtm
     controllers.current.get(cardId)?.abort();
     const abort = new AbortController();
     controllers.current.set(cardId, abort);
+    // 讲解（包括词典未收录后的 AI 兜底）从第一个 delta 之前就进入加载态。
+    update(requestId, cardId, { loading: true, error: '', missingConfig: false });
     const payload = {
       articleId: articleId!,
       selectedText: selection.selectedText,
@@ -239,53 +244,40 @@ export function useEnglishLearning({ articleId, contentRef, titleRef, contentHtm
     }
   }, [articleId, ai?.model, ai?.apiBaseUrl, update]);
 
-  const lookupAllTerms = useCallback(async (entries: { id: number; term: string }[], requestId: number) => {
-    await Promise.all(entries.map(async ({ id, term }) => {
-      const dictionary = await lookupDictionary(term);
-      update(requestId, id, { dictionary, loading: false });
-    }));
-  }, [update]);
-
   /**
-   * 完整词组未被任何词典收录时，把词组卡原地替换成逐词卡片。
-   * 沿用原卡片的选区信息；新卡片不再带词组回退，避免反复展开。
+   * 一张卡片内的查词流程：主表达 → 左右扩词 → 仍失败交给 AI。
+   * 全程只有一张卡，命中扩词后卡片标题切换成真正查到的词组。
    */
-  const expandPhraseCard = useCallback((phraseId: number, words: string[], requestId: number) => {
-    if (sequence.current !== requestId || !words.length) return;
-    const current = cardsRef.current;
-    const index = current.findIndex((card) => card.id === phraseId);
-    if (index < 0) return;
-    const source = current[index];
-    const replacements: LearningCardState[] = words.map((term) => {
-      nextCardId.current += 1;
-      return {
-        ...source,
-        id: nextCardId.current,
-        term,
-        loading: true,
-        dictionary: null,
-        error: '',
-        phraseFallback: undefined,
-      };
-    });
-    commit([...current.slice(0, index), ...replacements, ...current.slice(index + 1)]);
-    void lookupAllTerms(replacements.map((card) => ({ id: card.id, term: card.term })), requestId);
-  }, [commit, lookupAllTerms]);
+  const lookupCard = useCallback(async (
+    id: number,
+    plan: LookupPlan,
+    selection: LearningSelection,
+    requestId: number,
+  ) => {
+    lookupPlans.current.set(id, plan);
+    const alive = () => sequence.current === requestId &&
+      cardsRef.current.some((card) => card.id === id);
 
-  const lookupPhrase = useCallback(async (card: LearningCardState, requestId: number) => {
-    const dictionary = await lookupDictionary(card.term);
-    if (sequence.current !== requestId || !cardsRef.current.some((current) => current.id === card.id)) return;
-    if (dictionary.status === 'not_found' && card.phraseFallback) {
-      if (card.phraseFallback.explainOnMiss) {
-        update(requestId, card.id, { kind: 'sentence', dictionary: null, phraseFallback: undefined });
-        void explain(card.id, card.selection, requestId);
-      } else {
-        expandPhraseCard(card.id, card.phraseFallback.terms, requestId);
-      }
+    const primary = await lookupDictionary(plan.term);
+    if (!alive()) return;
+    if (primary.status !== 'not_found') {
+      update(requestId, id, { dictionary: primary, loading: false });
       return;
     }
-    update(requestId, card.id, { dictionary, loading: false });
-  }, [explain, expandPhraseCard, update]);
+
+    for (const term of plan.expandedTerms) {
+      const expanded = await lookupDictionary(term);
+      if (!alive()) return;
+      if (expanded.status === 'found') {
+        update(requestId, id, { term, dictionary: expanded, loading: false });
+        return;
+      }
+    }
+
+    // 所有候选都未收录：保留卡片，直接让 AI 结合原句解释。
+    update(requestId, id, { dictionary: { status: 'not_found' }, loading: false });
+    void explain(id, selection, requestId);
+  }, [explain, update]);
 
   const openSelection = useCallback(() => {
     if (!enabled || !isDesktop || vocabularyOpen || !articleId ||
@@ -296,71 +288,59 @@ export function useEnglishLearning({ articleId, contentRef, titleRef, contentHtm
     if (!rawSelection || (!contentRef.current && !titleRef?.current)) return;
     const mode = resolveSelectionMode(rawSelection);
     const selection = completeLearningSelection(rawSelection);
-    const kind = mode === 'sentence' ? 'sentence' : 'word';
+    const plan: LookupPlan = mode === 'word'
+      ? resolveLookupPlan(rawSelection.pieces)
+      : { term: '', expandedTerms: [] };
+    // 句子、跨段选区或无法拼出词组的情况都直接交给 AI。
+    const kind = mode === 'sentence' || !plan.term ? 'sentence' : 'word';
+    const term = plan.term || cleanVocabularyTerm(selection.selectedText).slice(0, 200);
     const tooLong = selection.selectedText.length > ENGLISH_LEARNING_MAX_TEXT_LENGTH ||
       selection.sentences.join('\n').length > ENGLISH_LEARNING_MAX_TEXT_LENGTH ||
       selection.sentences.length > 100 ||
-      (kind === 'word' && cleanVocabularyTerm(selection.selectedText).length > 200);
-    const plan: LookupPlan = kind === 'word' && !tooLong
-      ? resolveLookupPlan(rawSelection.pieces)
-      : { terms: [], fallbackTerms: [] };
-    const terms = plan.terms.length ? plan.terms : [cleanVocabularyTerm(selection.selectedText)];
-    // 完整和补全后的词组都先整体查询，未命中时再拆词或讲解。
-    const fallbackTerms = plan.terms.length ? plan.fallbackTerms : [];
+      (kind === 'word' && term.length > 200);
     const current = cardsRef.current;
-    const unchanged = current.length === terms.length &&
-      current.every((card, index) => card.term === terms[index]) &&
-      current[0]?.selection.selectedText === selection.selectedText &&
-      JSON.stringify(current[0]?.selection.sentences) === JSON.stringify(selection.sentences) &&
-      current[0]?.selection.rect.left === selection.rect.left &&
-      current[0]?.selection.rect.top === selection.rect.top;
-    // 同一次选区（pointerup 与 dblclick）只处理一次；收起过某张卡片后再次选择则重新展开。
+    const unchanged = current.length === 1 &&
+      current[0].term === term &&
+      current[0].kind === kind &&
+      current[0].selection.selectedText === selection.selectedText &&
+      JSON.stringify(current[0].selection.sentences) === JSON.stringify(selection.sentences) &&
+      current[0].selection.rect.left === selection.rect.left &&
+      current[0].selection.rect.top === selection.rect.top;
+    // 同一次选区（pointerup 与 dblclick）只处理一次；收起卡片后再次选择则重新展开。
     if (unchanged) return;
     close();
     const requestId = sequence.current;
     const context = buildSelectionContext(selection);
-    const next: LearningCardState[] = terms.map((term) => {
-      nextCardId.current += 1;
-      return {
-        id: nextCardId.current,
-        selection,
-        term,
-        articleId,
-        kind,
-        loading: !tooLong,
-        dictionary: null,
-        explanation: '',
-        phraseFallback: kind === 'word' && terms.length === 1 && fallbackTerms.length
-          ? { terms: fallbackTerms, explainOnMiss: mode === 'phrase-or-sentence' }
-          : undefined,
-        error: tooLong ? '所选内容过长，请缩小选区' : '',
-        missingConfig: false,
-        saving: false,
-        saved: false,
-        invalidSelection: tooLong,
-        context,
-        detailLoading: false,
-        detailText: '',
-        detailError: '',
-        detailMissingConfig: false,
-      };
-    });
-    commit(next);
+    nextCardId.current += 1;
+    const card: LearningCardState = {
+      id: nextCardId.current,
+      selection,
+      term,
+      articleId,
+      kind,
+      loading: !tooLong,
+      dictionary: null,
+      explanation: '',
+      error: tooLong ? '所选内容过长，请缩小选区' : '',
+      missingConfig: false,
+      saving: false,
+      saved: false,
+      invalidSelection: tooLong,
+      context,
+      detailLoading: false,
+      detailText: '',
+      detailError: '',
+      detailMissingConfig: false,
+    };
+    commit([card]);
     if (tooLong) return;
     if (kind === 'sentence') {
-      void explain(next[0].id, selection, requestId);
-    } else if (mode === 'phrase-or-sentence' && !next[0].phraseFallback) {
-      // 含标点的长片段没有可查询的完整词组，直接讲解。
-      const [card] = next;
-      commit([{ ...card, kind: 'sentence' }]);
       void explain(card.id, selection, requestId);
-    } else if (next[0].phraseFallback) {
-      void lookupPhrase(next[0], requestId);
     } else {
-      void lookupAllTerms(next.map((card) => ({ id: card.id, term: card.term })), requestId);
+      void lookupCard(card.id, plan, selection, requestId);
     }
   }, [enabled, isDesktop, vocabularyOpen, articleId, contentRef, titleRef, close, commit, explain,
-    lookupPhrase, lookupAllTerms]);
+    lookupCard]);
 
   const onPointerUp = useCallback((event: ReactPointerEvent<HTMLElement>) => {
     lastPointerType.current = event.pointerType;
@@ -380,19 +360,28 @@ export function useEnglishLearning({ articleId, contentRef, titleRef, contentHtm
   const retry = useCallback((id: number) => {
     const current = cardsRef.current.find((card) => card.id === id);
     if (!current || current.loading || current.saving || current.invalidSelection) return;
-    // 沿用当前 requestId：重试只影响这张卡片，不能让同一次选区的另一张卡片丢掉在途结果。
+    // 沿用当前 requestId：重试只影响这张卡片。
     // force=true：重新生成必须绕过缓存，否则拿到的是上次缓存的废回答。
     const requestId = sequence.current;
     if (current.kind === 'sentence') {
       // 重新生成时保留旧讲解直到首个 delta 到达，避免闪空；失败则旧文仍在、可再重试。
       update(requestId, id, { loading: true, error: '', missingConfig: false });
       void explain(id, current.selection, requestId, true);
-    } else {
-      update(requestId, id, { loading: true, error: '', missingConfig: false });
-      if (current.phraseFallback) void lookupPhrase(current, requestId);
-      else void lookupAllTerms([{ id, term: current.term }], requestId);
+      return;
     }
-  }, [explain, lookupPhrase, lookupAllTerms, update]);
+    update(requestId, id, { loading: true, error: '', missingConfig: false });
+    if (current.dictionary?.status === 'not_found') {
+      // 词典未收录时卡片已经转为 AI 解释；重试的是这段讲解。
+      void explain(id, current.selection, requestId, true);
+      return;
+    }
+    const plan = lookupPlans.current.get(id) ?? resolveLookupPlan(current.selection.pieces);
+    if (!plan.term) {
+      update(requestId, id, { loading: false, error: '没有可查询的表达，请重新选择' });
+      return;
+    }
+    void lookupCard(id, plan, current.selection, requestId);
+  }, [explain, lookupCard, update]);
 
   /** 单词卡「详细解释」重新生成：force=true 绕过缓存、覆盖旧结果。 */
   const retryDetail = useCallback((id: number) => {
@@ -439,6 +428,50 @@ export function useEnglishLearning({ articleId, contentRef, titleRef, contentHtm
     }
   }, [update]);
 
+  /**
+   * 词典未收录时的自定义生词：用户可以改词条、自己写释义，再收进生词本。
+   * 只在查询失败的卡片上出现，正常查到的词仍走 saveWord。
+   */
+  const saveCustomWord = useCallback(async (id: number, term: string, definition: string) => {
+    const current = cardsRef.current.find((card) => card.id === id);
+    // AI 兜底解释可以同时在流式生成，保存不需要等它结束。
+    if (!current || current.kind !== 'word' || current.saving || current.saved ||
+        current.invalidSelection) return;
+    const customTerm = cleanVocabularyTerm(term);
+    if (!customTerm) {
+      update(sequence.current, id, { error: '请输入单词或词组' });
+      return;
+    }
+    const requestId = sequence.current;
+    saveControllers.current.get(id)?.abort();
+    const abort = new AbortController();
+    saveControllers.current.set(id, abort);
+    update(requestId, id, { saving: true, error: '' });
+    try {
+      const article = useAppStore.getState().article;
+      await api.addVocabulary({
+        term: customTerm,
+        definition: definition.trim(),
+        sourceArticleId: current.articleId,
+        sourceTitle: article?.id === current.articleId ? article.title : '',
+        sourceUrl: article?.id === current.articleId ? article.link ?? '' : '',
+        sourceSentence: current.selection.sentences.join('\n'),
+      });
+      if (abort.signal.aborted) return;
+      void useAppStore.getState().loadVocabulary();
+      update(requestId, id, { term: customTerm, saving: false, saved: true });
+      useAppStore.getState().toast(`已加入生词本：${customTerm}`, 'success');
+    } catch (error) {
+      if (abort.signal.aborted) return;
+      update(requestId, id, {
+        saving: false,
+        error: error instanceof Error ? error.message : '保存失败，请重试',
+      });
+    } finally {
+      if (saveControllers.current.get(id) === abort) saveControllers.current.delete(id);
+    }
+  }, [update]);
+
   // 选区依赖的上下文变化后旧卡片必须整体失效（同时中断在途请求）。
   useEffect(() => {
     if (enabled && isDesktop) warmLearningDictionaries();
@@ -464,6 +497,7 @@ export function useEnglishLearning({ articleId, contentRef, titleRef, contentHtm
     retry,
     retryDetail,
     saveWord,
+    saveCustomWord,
     explainDetail,
     onPointerUp,
     onDoubleClick,

@@ -23,6 +23,23 @@ export interface Toast {
   tone: 'info' | 'success' | 'error';
 }
 
+/** 应用内确认框的内容。danger 为 false 时用中性样式（非破坏性操作）。 */
+export interface ConfirmRequest {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  cancelLabel: string;
+  danger: boolean;
+}
+
+export interface ConfirmOptions {
+  message: string;
+  title?: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  danger?: boolean;
+}
+
 /** 从 RSS 目录选中一个来源后带进「添加订阅」的初始值。 */
 export interface FeedPrefill {
   title: string;
@@ -105,6 +122,15 @@ interface AppState {
 
   ui: UiState;
   toasts: Toast[];
+  /**
+   * 当前等待用户回答的确认框。
+   *
+   * 用自绘弹窗而不是 `window.confirm`：macOS 的 WKWebView 没有实现 JS 确认面板，
+   * 调用会直接返回 false，界面上表现为「点了删除没反应」。所有删改确认都走这里。
+   */
+  confirmRequest: ConfirmRequest | null;
+  askConfirm: (options: ConfirmOptions) => Promise<boolean>;
+  resolveConfirm: (value: boolean) => void;
 
   init: () => Promise<void>;
   reloadSnapshot: (options?: { keepArticles?: boolean }) => Promise<void>;
@@ -211,6 +237,9 @@ function aiConfigured(state: Pick<AppState, 'settings' | 'secrets'>): boolean {
   return state.secrets?.hasAiApiKey !== false;
 }
 
+/** 当前确认框的 Promise 出口；放在模块作用域，store 里不放函数状态。 */
+let pendingConfirm: ((value: boolean) => void) | null = null;
+
 export const useAppStore = create<AppState>((set, get) => ({
   ready: false,
   loadingSnapshot: false,
@@ -255,6 +284,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     rightPaneVisible: true,
   },
   toasts: [],
+  confirmRequest: null,
 
   async init() {
     try {
@@ -936,6 +966,30 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   dismissToast(id) {
     set((state) => ({ toasts: state.toasts.filter((toast) => toast.id !== id) }));
+  },
+
+  askConfirm(options) {
+    // 上一条还没答就又开一条：旧的那条按「取消」结束，别把它的 await 永远挂住。
+    pendingConfirm?.(false);
+    return new Promise<boolean>((resolve) => {
+      pendingConfirm = resolve;
+      set({
+        confirmRequest: {
+          title: options.title ?? '确认操作',
+          message: options.message,
+          confirmLabel: options.confirmLabel ?? '确定',
+          cancelLabel: options.cancelLabel ?? '取消',
+          danger: options.danger ?? true,
+        },
+      });
+    });
+  },
+
+  resolveConfirm(value) {
+    const resolve = pendingConfirm;
+    pendingConfirm = null;
+    set({ confirmRequest: null });
+    resolve?.(value);
   },
 }));
 

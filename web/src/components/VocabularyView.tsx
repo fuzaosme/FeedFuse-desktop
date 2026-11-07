@@ -31,6 +31,7 @@ export function VocabularyView() {
   const removeVocabulary = useAppStore((state) => state.removeVocabulary);
   const openExternal = useAppStore((state) => state.openExternal);
   const updateVocabulary = useAppStore((state) => state.updateVocabulary);
+  const askConfirm = useAppStore((state) => state.askConfirm);
   const toast = useAppStore((state) => state.toast);
   const setUi = useAppStore((state) => state.setUi);
 
@@ -84,7 +85,7 @@ export function VocabularyView() {
               <span className="ff-chip tabular-nums">{vocabulary.length} 个词条</span>
             </h1>
             <p className="mt-0.5 text-[11px]" style={{ color: 'var(--ff-muted)' }}>
-              阅读时再次遇到这些词会用浅色标记，点一下就能看释义；每个词最多留 5 句例句。
+              阅读时再次遇到这些词会用浅色标记，鼠标悬停即可预览释义；每个词最多留 5 句例句。
             </p>
           </div>
 
@@ -138,7 +139,14 @@ export function VocabularyView() {
               total={vocabulary.length}
               query={query}
               busy={busy}
-              onDelete={(item) => void removeVocabulary(item.id)}
+              onDelete={async (item) => {
+                const confirmed = await askConfirm({
+                  title: '删除生词',
+                  message: `从生词本删除「${item.term}」？它的例句也会一并删除。`,
+                  confirmLabel: '删除',
+                });
+                if (confirmed) await removeVocabulary(item.id);
+              }}
               onSaveDefinition={async (item, definition) => {
                 const updated = await updateVocabulary(item.id, { definition });
                 if (updated) toast(`已更新「${item.term}」的释义`, 'success');
@@ -156,7 +164,7 @@ export function VocabularyView() {
 
 const COLUMNS: Array<{ key: string; label: string; width: string; hint?: string }> = [
   { key: 'term', label: '单词', width: '18%' },
-  { key: 'definition', label: '词典释义', width: '26%' },
+  { key: 'definition', label: '释义', width: '26%' },
   { key: 'sentence', label: '添加时出现的句子', width: '30%', hint: '悬停查看全部例句' },
   { key: 'link', label: '原文链接', width: '16%' },
   { key: 'created', label: '添加时间', width: '10%' },
@@ -325,7 +333,7 @@ function VocabularyTable({
                       style={{ color: 'var(--ff-faint)' }}
                       onClick={() => startEdit(item)}
                     >
-                      补充释义
+                      自定义释义
                     </button>
                   )}
                 </td>
@@ -402,10 +410,9 @@ function VocabularyTable({
                       title={`删除「${item.term}」`}
                       aria-label={`删除 ${item.term}`}
                       onClick={() => {
-                        if (!window.confirm(`从生词本删除「${item.term}」？它的例句也会一并删除。`)) return;
                         cancelHover();
                         setHover(null);
-                        onDelete(item);
+                        void onDelete(item);
                       }}
                     >
                       <Trash2 size={13} />
@@ -491,6 +498,7 @@ function DictionaryPanel() {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const toast = useAppStore((state) => state.toast);
+  const askConfirm = useAppStore((state) => state.askConfirm);
 
   const reload = async () => {
     try {
@@ -522,7 +530,12 @@ function DictionaryPanel() {
   /** 删除词典会连带删掉它所有词条，先确认；失败也要说清楚，别让用户以为已经删了。 */
   const removeDict = async (dict: DictionarySummary) => {
     const detail = dict.entryCount > 0 ? `连同其中的 ${dict.entryCount} 条词条` : '';
-    if (!window.confirm(`删除词典「${dict.name}」${detail}？此操作不可撤销。`)) return;
+    const confirmed = await askConfirm({
+      title: '删除词典',
+      message: `删除词典「${dict.name}」${detail}？此操作不可撤销。`,
+      confirmLabel: '删除',
+    });
+    if (!confirmed) return;
     try {
       await api.deleteDictionary(dict.id);
       toast('词典已删除', 'success');

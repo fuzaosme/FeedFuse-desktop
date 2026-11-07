@@ -6,7 +6,7 @@ import { openDb } from './db/sqlite';
 import { createApp } from './http/app';
 import { failStaleSummarySessions, clearPendingFilterStatus } from './domain/articles';
 import { writeLog } from './domain/logs';
-import { builtinDictionaryEntryCount } from './domain/builtinDictionary';
+import { BUILTIN_SOURCES } from './domain/builtinDictionary';
 import { configureDictionaryStorage } from './domain/dict/storage';
 import { closeAllDictionaryReaders } from './domain/dict/readers';
 import { startScheduler, stopScheduler } from './services/scheduler';
@@ -27,9 +27,11 @@ async function main(): Promise<void> {
   // 上次进程留下的「进行中」状态都要收尾：摘要会话标失败，过滤任务放回可见。
   // 两者都是内存任务的残影，不清理就会在界面上变成永远转不完的圈。
   failStaleSummarySessions();
-  // 内置词典是查词主路径：在监听端口前预热，首个查词请求不必等 2.8MB JSON 解析。
+  // 内置词典是查词主路径。WordNet 按首字母分片，这里只读一次索引核对文件是否齐全，
+  // 真正解析发生在第一次查到该首字母的时候。
   try {
-    console.log(`[feedfuse] 内置核心词库已载入：${builtinDictionaryEntryCount()} 条`);
+    const detail = BUILTIN_SOURCES.map((source) => `${source.name} ${source.entryCount()} 条`).join(' · ');
+    console.log(`[feedfuse] 内置词典就绪：${detail}`);
   } catch (err) {
     console.error('[feedfuse] 内置核心词库载入失败（查词将只使用导入词典）', err);
   }

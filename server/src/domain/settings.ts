@@ -57,6 +57,12 @@ export interface RssSettings {
   };
 }
 
+/** 词典开关。内置词典不在 dictionaries 表里，停用状态只能存在设置里。 */
+export interface DictionarySettings {
+  /** 已停用的内置词典 id；默认全开，所以存「停用了哪些」而不是「启用了哪些」。 */
+  disabledIds: string[];
+}
+
 export interface LoggingSettings {
   enabled: boolean;
   retentionDays: 1 | 3 | 7 | 14 | 30 | 90;
@@ -67,6 +73,7 @@ export interface PersistedSettings {
   general: GeneralSettings;
   ai: AiSettings;
   rss: RssSettings;
+  dictionaries: DictionarySettings;
   logging: LoggingSettings;
 }
 
@@ -109,6 +116,7 @@ export const defaultSettings: PersistedSettings = {
       duplicate: { enabled: true, similarity: 0.85 },
     },
   },
+  dictionaries: { disabledIds: [] },
   logging: { enabled: true, retentionDays: 7, minLevel: 'info' },
 };
 
@@ -142,6 +150,7 @@ export function normalizeSettings(raw: unknown): PersistedSettings {
   const keyword = isRecord(filter.keyword) ? filter.keyword : {};
   const aiFilter = isRecord(filter.ai) ? filter.ai : {};
   const duplicate = isRecord(filter.duplicate) ? filter.duplicate : {};
+  const dictionaries = isRecord(input.dictionaries) ? input.dictionaries : {};
   const logging = isRecord(input.logging) ? input.logging : {};
 
   return {
@@ -235,6 +244,11 @@ export function normalizeSettings(raw: unknown): PersistedSettings {
         },
       },
     },
+    dictionaries: {
+      disabledIds: Array.isArray(dictionaries.disabledIds)
+        ? [...new Set(dictionaries.disabledIds.filter((item): item is string => typeof item === 'string'))].slice(0, 50)
+        : [],
+    },
     logging: {
       enabled: readBool(logging.enabled, defaultSettings.logging.enabled),
       retentionDays: readNumEnum(
@@ -312,6 +326,18 @@ export interface SaveSettingsInput {
 
 export function saveSettings(input: SaveSettingsInput): PersistedSettings {
   const normalized = normalizeSettings(input.settings);
+  // 词典开关不接受设置页整包提交：设置弹窗里的草稿是打开时的快照，
+  // 用户在词典面板里开关过之后，再点保存就会把旧快照写回去。只认 setDictionaryEnabledSetting。
+  normalized.dictionaries.disabledIds = getSettings().dictionaries.disabledIds;
+  return persistSettings(normalized, input.aiApiKey, input.translationApiKey);
+}
+
+/** 真正的落库。saveSettings 会拦掉词典开关，词典面板走这条路。 */
+function persistSettings(
+  normalized: PersistedSettings,
+  aiApiKey?: string,
+  translationApiKey?: string,
+): PersistedSettings {
   const db = getDb();
   const current = readRow();
   db.run(
@@ -323,10 +349,10 @@ export function saveSettings(input: SaveSettingsInput): PersistedSettings {
        translation_api_key = excluded.translation_api_key,
        updated_at = excluded.updated_at`,
     JSON.stringify(normalized),
-    input.aiApiKey === undefined ? (current?.ai_api_key ?? null) : input.aiApiKey || null,
-    input.translationApiKey === undefined
+    aiApiKey === undefined ? (current?.ai_api_key ?? null) : aiApiKey || null,
+    translationApiKey === undefined
       ? (current?.translation_api_key ?? null)
-      : input.translationApiKey || null,
+      : translationApiKey || null,
     nowIso(),
   );
   return normalized;
@@ -366,4 +392,18 @@ export function resolveAiRuntime(purpose: AiPurpose): AiRuntimeConfig {
     throw new Error('AI 服务缺少 API Key，请到设置中心填写');
   }
   return { apiBaseUrl: ai.apiBaseUrl.replace(/\/+$/, ''), apiKey, model: ai.model };
+}
+
+/** 内置词典是否启用。停用列表来自设置，未知 id 一律视为启用。 */
+export function isDictionaryEnabled(id: string): boolean {
+  return !getSettings().dictionaries.disabledIds.includes(id);
+}
+
+/** 记录/取消一本内置词典的停用状态。 */
+export function setDictionaryEnabledSetting(id: string, enabled: boolean): void {
+  const settings = getSettings();
+  const disabled = new Set(settings.dictionaries.disabledIds);
+  if (enabled) disabled.delete(id);
+  else disabled.add(id);
+  persistSettings({ ...settings, dictionaries: { disabledIds: [...disabled] } });
 }

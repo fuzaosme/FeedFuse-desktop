@@ -33,6 +33,7 @@ export function SettingsModal() {
   const loadSettings = useAppStore((state) => state.loadSettings);
   const reloadSnapshot = useAppStore((state) => state.reloadSnapshot);
   const toast = useAppStore((state) => state.toast);
+  const askConfirm = useAppStore((state) => state.askConfirm);
 
   const [tab, setTab] = useState<Tab>('general');
   const [draft, setDraft] = useState<Settings | null>(settings);
@@ -201,13 +202,12 @@ export function SettingsModal() {
   };
 
   const handleReset = async () => {
-    if (
-      !window.confirm(
-        '恢复默认设置？除已经填写的 API Key 外，其余配置都会回到初始值。已抓取的文章和订阅不受影响。',
-      )
-    ) {
-      return;
-    }
+    const confirmed = await askConfirm({
+      title: '恢复默认设置',
+      message: '恢复默认设置？除已经填写的 API Key 外，其余配置都会回到初始值。已抓取的文章和订阅不受影响。',
+      confirmLabel: '恢复默认',
+    });
+    if (!confirmed) return;
     setSaving(true);
     try {
       await resetSettings();

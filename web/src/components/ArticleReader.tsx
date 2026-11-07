@@ -106,6 +106,7 @@ export function ArticleReader() {
   const vocabulary = useAppStore((state) => state.vocabulary);
   const removeVocabulary = useAppStore((state) => state.removeVocabulary);
   const addVocabularySentence = useAppStore((state) => state.addVocabularySentence);
+  const askConfirm = useAppStore((state) => state.askConfirm);
   const toast = useAppStore((state) => state.toast);
 
   const [summaryOpen, setSummaryOpen] = useState(true);
@@ -117,6 +118,9 @@ export function ArticleReader() {
   const [addingSentence, setAddingSentence] = useState(false);
   /** 点开时算好的「当前这一句」，加句按钮直接用它，不必再回头找 DOM。 */
   const popoverSentence = useRef('');
+  /** 当前悬停的生词；同一元素重复进入时不重置浮层，避免闪烁。 */
+  const hoveredWord = useRef<HTMLElement | null>(null);
+  const hoverCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // 只有本组件发起的流式请求才该转圈。store 里的 summary.status 可能是「上次留下的 running」，
   // 拿它当 loading 会让用户盯着一个永远不会结束的动画。
   const [streaming, setStreaming] = useState(false);
@@ -175,6 +179,9 @@ export function ArticleReader() {
 
   // 换文章/切译文后旧浮层的位置已经失效，直接收起。
   useEffect(() => {
+    if (hoverCloseTimer.current) clearTimeout(hoverCloseTimer.current);
+    hoverCloseTimer.current = null;
+    hoveredWord.current = null;
     setWordPopover(null);
   }, [articleId, ui.translationMode]);
 
@@ -274,17 +281,28 @@ export function ArticleReader() {
   const externalLink = article.link;
   const hasBody = Boolean(article.contentHtml?.trim() || article.contentFullHtml?.trim());
 
+  const cancelHoverClose = () => {
+    if (hoverCloseTimer.current) clearTimeout(hoverCloseTimer.current);
+    hoverCloseTimer.current = null;
+  };
+
+  const closeWordPopover = () => {
+    cancelHoverClose();
+    hoveredWord.current = null;
+    setWordPopover(null);
+  };
+
+  /** 鼠标离开生词与浮层后留一点时间，斜着移进浮层时不会当场消失。 */
+  const scheduleHoverClose = () => {
+    cancelHoverClose();
+    hoverCloseTimer.current = setTimeout(() => {
+      hoveredWord.current = null;
+      setWordPopover(null);
+    }, 240);
+  };
+
   /**
-   * 正文点击的事件委托。
-   *
-   * 两件事必须在这里兜住：
-   * 1. 桌面 WebView 对 `target="_blank"` 没有默认行为，必须交给系统浏览器；
-   * 2. 站内相对链接（`/post/123`）如果放过，WebView 会真的导航过去，被 sidecar 的 SPA
-   *    兜底接住，等于整页重载、阅读现场全丢。所以除页内锚点外一律拦下，按文章地址
-   *    补全后再决定交给谁。
-   */
-  /**
-   * 打开生词浮层。
+   * 打开生词浮层（悬停预览与点击共用）。
    *
    * `data-vocabulary-term` 存的是词条在生词本里的原始写法，用它定位条目；
    * 找不到（刚被删掉/词条改了）就直接不弹，别让用户点出一个空壳。
@@ -295,12 +313,38 @@ export function ArticleReader() {
     const entry = vocabulary.find((item) => item.term === term) ??
       vocabulary.find((item) => normalizeVocabularyTerm(item.term) === normalized);
     if (!entry) return;
+    cancelHoverClose();
+    hoveredWord.current = element;
     const rect = element.getBoundingClientRect();
     popoverSentence.current = sentenceAroundElement(element);
     setWordPopover({
       id: entry.id,
       rect: { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom },
     });
+  };
+
+  /** 悬停即预览：移到下一个生词时直接切换，移到浮层上则保持。 */
+  const handleVocabularyHover = (event: React.MouseEvent<HTMLElement>) => {
+    // 拖拽划词时不弹预览，否则划到生词上会先冒出一层浮层。
+    if (event.buttons !== 0) return;
+    const word = (event.target as HTMLElement | null)?.closest?.('[data-vocabulary-word]');
+    if (!(word instanceof HTMLElement)) return;
+    if (hoveredWord.current === word) {
+      cancelHoverClose();
+      return;
+    }
+    openWordPopover(word);
+  };
+
+  const handleVocabularyLeave = (event: React.MouseEvent<HTMLElement>) => {
+    const word = (event.target as HTMLElement | null)?.closest?.('[data-vocabulary-word]');
+    if (!(word instanceof HTMLElement) || hoveredWord.current !== word) return;
+    const next = event.relatedTarget;
+    // 移到另一个生词或浮层内部：不关闭，交给目标元素接管。
+    if (next instanceof Element &&
+        next.closest('[data-vocabulary-word], [data-testid="vocabulary-word-popover"]')) return;
+    hoveredWord.current = null;
+    scheduleHoverClose();
   };
 
   /** 把「当前这句」收进例句；满 5 句时由服务端替换最早的一句。 */
@@ -329,7 +373,12 @@ export function ArticleReader() {
 
   const handleDeleteWord = async () => {
     if (!popoverEntry) return;
-    if (!window.confirm(`从生词本删除「${popoverEntry.term}」？它的例句也会一并删除。`)) return;
+    const confirmed = await askConfirm({
+      title: '删除生词',
+      message: `从生词本删除「${popoverEntry.term}」？它的例句也会一并删除。`,
+      confirmLabel: '删除',
+    });
+    if (!confirmed) return;
     await removeVocabulary(popoverEntry.id);
     setWordPopover(null);
   };
@@ -349,6 +398,15 @@ export function ArticleReader() {
     return true;
   };
 
+  /**
+   * 正文点击的事件委托。
+   *
+   * 两件事必须在这里兜住：
+   * 1. 桌面 WebView 对 `target="_blank"` 没有默认行为，必须交给系统浏览器；
+   * 2. 站内相对链接（`/post/123`）如果放过，WebView 会真的导航过去，被 sidecar 的 SPA
+   *    兜底接住，等于整页重载、阅读现场全丢。所以除页内锚点外一律拦下，按文章地址
+   *    补全后再决定交给谁。
+   */
   const handleBodyClick = (event: React.MouseEvent<HTMLDivElement>) => {
     // 生词优先于链接：加亮后的词可能正好落在一段链接文字里，此时应当看释义而不是跳原文。
     if (handleVocabularyClick(event)) return;
@@ -409,202 +467,206 @@ export function ArticleReader() {
 
   return (
     <article className="flex h-full flex-col" style={{ background: 'var(--ff-surface)' }}>
-      <header className="border-b px-6 py-3">
-        <div className="mb-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px]" style={{ color: 'var(--ff-muted)' }}>
-          <span className="max-w-[40%] truncate font-medium">{article.feedTitle}</span>
-          <span>·</span>
-          <span className="shrink-0 whitespace-nowrap">{formatDateTime(article.publishedAt)}</span>
-          {article.author ? (
-            <>
-              <span>·</span>
-              <span className="max-w-[30%] shrink-0 truncate">{article.author}</span>
-            </>
-          ) : null}
-          <span className="min-w-2 flex-1" />
-          <button
-            className="ff-btn ff-btn-ghost !px-1.5 !py-1"
-            onClick={() => void toggleStar(article.id, !article.isStarred)}
-            title="星标 (s)"
-          >
-            <Star
-              size={14}
-              style={article.isStarred ? { color: 'var(--ff-accent)', fill: 'var(--ff-accent)' } : undefined}
-            />
-          </button>
-          <button
-            className="ff-btn ff-btn-ghost !px-1.5 !py-1"
-            onClick={() => void toggleRead(article.id, !article.isRead)}
-            title="切换已读 (m)"
-          >
-            <Check size={14} style={article.isRead ? { color: 'var(--ff-accent)' } : undefined} />
-          </button>
-          {externalLink ? (
-            // 用 <a href> 保留「复制链接 / 悬停看地址」，但点击必须改走系统浏览器。
-            <a
+      <header className="border-b">
+        <div className="ff-reading-column px-6 py-3">
+          <div className="mb-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px]" style={{ color: 'var(--ff-muted)' }}>
+            <span className="max-w-[40%] truncate font-medium">{article.feedTitle}</span>
+            <span>·</span>
+            <span className="shrink-0 whitespace-nowrap">{formatDateTime(article.publishedAt)}</span>
+            {article.author ? (
+              <>
+                <span>·</span>
+                <span className="max-w-[30%] shrink-0 truncate">{article.author}</span>
+              </>
+            ) : null}
+            <span className="min-w-2 flex-1" />
+            <button
               className="ff-btn ff-btn-ghost !px-1.5 !py-1"
-              href={externalLink}
-              title="在浏览器打开原文"
-              onClick={(event) => {
-                event.preventDefault();
-                handleOpenOriginal();
-              }}
+              onClick={() => void toggleStar(article.id, !article.isStarred)}
+              title="星标 (s)"
             >
-              <ExternalLink size={14} />
-            </a>
+              <Star
+                size={14}
+                style={article.isStarred ? { color: 'var(--ff-accent)', fill: 'var(--ff-accent)' } : undefined}
+              />
+            </button>
+            <button
+              className="ff-btn ff-btn-ghost !px-1.5 !py-1"
+              onClick={() => void toggleRead(article.id, !article.isRead)}
+              title="切换已读 (m)"
+            >
+              <Check size={14} style={article.isRead ? { color: 'var(--ff-accent)' } : undefined} />
+            </button>
+            {externalLink ? (
+              // 用 <a href> 保留「复制链接 / 悬停看地址」，但点击必须改走系统浏览器。
+              <a
+                className="ff-btn ff-btn-ghost !px-1.5 !py-1"
+                href={externalLink}
+                title="在浏览器打开原文"
+                onClick={(event) => {
+                  event.preventDefault();
+                  handleOpenOriginal();
+                }}
+              >
+                <ExternalLink size={14} />
+              </a>
+            ) : null}
+          </div>
+
+          <h1
+            ref={titleRef}
+            className="text-[19px] font-semibold leading-snug"
+            onPointerUp={learning.onPointerUp}
+            onDoubleClick={learning.onDoubleClick}
+            onMouseOver={handleVocabularyHover}
+            onMouseOut={handleVocabularyLeave}
+            onClick={(event) => {
+              handleVocabularyClick(event);
+            }}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter' && event.key !== ' ') return;
+              if (!openVocabularyWord(event.target)) return;
+              event.preventDefault();
+            }}
+            dangerouslySetInnerHTML={{ __html: titleHtml }}
+          />
+          {article.titleZh && ui.translationMode === 'off' ? (
+            <p className="mt-1 text-[13px]" style={{ color: 'var(--ff-muted)' }}>
+              {article.titleZh}
+            </p>
           ) : null}
-        </div>
-
-        <h1
-          ref={titleRef}
-          className="text-[19px] font-semibold leading-snug"
-          onPointerUp={learning.onPointerUp}
-          onDoubleClick={learning.onDoubleClick}
-          onClick={(event) => {
-            handleVocabularyClick(event);
-          }}
-          onKeyDown={(event) => {
-            if (event.key !== 'Enter' && event.key !== ' ') return;
-            if (!openVocabularyWord(event.target)) return;
-            event.preventDefault();
-          }}
-          dangerouslySetInnerHTML={{ __html: titleHtml }}
-        />
-        {article.titleZh && ui.translationMode === 'off' ? (
-          <p className="mt-1 text-[13px]" style={{ color: 'var(--ff-muted)' }}>
-            {article.titleZh}
-          </p>
-        ) : null}
-        {ui.translationMode !== 'off' && article.titleZh ? (
-          <p className="mt-1 text-[12px]" style={{ color: 'var(--ff-faint)' }}>
-            {article.title}
-          </p>
-        ) : null}
-
-        <div className="mt-2 flex flex-wrap items-center gap-1.5">
-          <button
-            className={clsx('ff-btn !px-2 !py-1 text-[11px]')}
-            onClick={() => void startSummary(article.id)}
-            disabled={generating}
-          >
-            {generating ? <Spinner /> : <Sparkles size={12} />}
-            {article.aiSummary || summary.text ? '重新生成摘要' : 'AI 摘要'}
-          </button>
-
-          <button
-            className="ff-btn !px-2 !py-1 text-[11px]"
-            onClick={() => void translateTitle(article.id)}
-            title="把标题翻译成中文"
-          >
-            <Languages size={12} /> 译标题
-          </button>
-
-          <button
-            className="ff-btn !px-2 !py-1 text-[11px]"
-            onClick={() => void translateBody(article.id)}
-            disabled={translation.status === 'running'}
-            title="逐段翻译正文并保留原文"
-          >
-            {translation.status === 'running' ? <Spinner /> : <Wand2 size={12} />}
-            {translation.status === 'running'
-              ? `翻译中 ${translation.progress}`
-              : article.aiTranslationBilingualHtml
-                ? '重新翻译'
-                : 'AI 翻译'}
-          </button>
-
-          {article.aiTranslationBilingualHtml ? (
-            <div className="flex overflow-hidden rounded-md border text-[11px]">
-              {(
-                [
-                  ['off', '原文'],
-                  ['bilingual', '双语'],
-                  ['zh', '仅译文'],
-                ] as const
-              ).map(([mode, label]) => (
-                <button
-                  key={mode}
-                  className="px-2 py-1 transition-colors"
-                  style={
-                    ui.translationMode === mode
-                      ? { background: 'var(--ff-accent-fill)', color: 'var(--ff-accent-contrast)' }
-                      : { color: 'var(--ff-muted)' }
-                  }
-                  onClick={() => setTranslationMode(mode)}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
+          {ui.translationMode !== 'off' && article.titleZh ? (
+            <p className="mt-1 text-[12px]" style={{ color: 'var(--ff-faint)' }}>
+              {article.title}
+            </p>
           ) : null}
 
-          {/*
-            英语学习模式：开启后才能划词查词 / AI 讲解。
-            以前这个能力是常驻的，任何选中都会弹卡片，等于没有关闭入口；
-            做成显式开关并与摘要、翻译放在一起，用户才知道它何时生效。
-          */}
-          <button
-            className={clsx('ff-btn !px-2 !py-1 text-[11px]')}
-            aria-pressed={ui.learningEnabled}
-            style={
-              ui.learningEnabled
-                ? {
-                    background: 'var(--ff-accent-soft)',
-                    borderColor: 'var(--ff-accent)',
-                    color: 'var(--ff-accent-text)',
-                  }
-                : undefined
-            }
-            onClick={() => setUi({ learningEnabled: !ui.learningEnabled })}
-            title={
-              ui.learningEnabled
-                ? '关闭英语学习模式：选中文字不再弹出查词卡片'
-                : '开启英语学习模式：选中文字可查词、AI 讲解、加入生词本'
-            }
-          >
-            <GraduationCap size={12} /> 英语学习
-          </button>
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <button
+              className={clsx('ff-btn !px-2 !py-1 text-[11px]')}
+              onClick={() => void startSummary(article.id)}
+              disabled={generating}
+            >
+              {generating ? <Spinner /> : <Sparkles size={12} />}
+              {article.aiSummary || summary.text ? '重新生成摘要' : 'AI 摘要'}
+            </button>
 
-          {!article.hasFulltext ? (
             <button
               className="ff-btn !px-2 !py-1 text-[11px]"
-              onClick={() => void fetchFulltext(article.id)}
-              disabled={fetchingFulltext}
+              onClick={() => void translateTitle(article.id)}
+              title="把标题翻译成中文"
             >
-              {fetchingFulltext ? <Spinner /> : <Newspaper size={12} />} 抓取全文
+              <Languages size={12} /> 译标题
             </button>
-          ) : (
-            <span className="ff-chip">
-              <Check size={10} /> 全文
-            </span>
-          )}
 
-          {feed?.fullTextOnOpenEnabled ? <span className="ff-chip">打开即全文</span> : null}
-          {feed?.aiSummaryOnOpenEnabled ? <span className="ff-chip">打开即摘要</span> : null}
+            <button
+              className="ff-btn !px-2 !py-1 text-[11px]"
+              onClick={() => void translateBody(article.id)}
+              disabled={translation.status === 'running'}
+              title="逐段翻译正文并保留原文"
+            >
+              {translation.status === 'running' ? <Spinner /> : <Wand2 size={12} />}
+              {translation.status === 'running'
+                ? `翻译中 ${translation.progress}`
+                : article.aiTranslationBilingualHtml
+                  ? '重新翻译'
+                  : 'AI 翻译'}
+            </button>
 
-          {navIndex >= 0 ? (
-            <div className="ml-auto flex items-center gap-1 text-[11px]" style={{ color: 'var(--ff-muted)' }}>
+            {article.aiTranslationBilingualHtml ? (
+              <div className="flex overflow-hidden rounded-md border text-[11px]">
+                {(
+                  [
+                    ['off', '原文'],
+                    ['bilingual', '双语'],
+                    ['zh', '仅译文'],
+                  ] as const
+                ).map(([mode, label]) => (
+                  <button
+                    key={mode}
+                    className="px-2 py-1 transition-colors"
+                    style={
+                      ui.translationMode === mode
+                        ? { background: 'var(--ff-accent-fill)', color: 'var(--ff-accent-contrast)' }
+                        : { color: 'var(--ff-muted)' }
+                    }
+                    onClick={() => setTranslationMode(mode)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+
+            {/*
+              英语学习模式：开启后才能划词查词 / AI 讲解。
+              以前这个能力是常驻的，任何选中都会弹卡片，等于没有关闭入口；
+              做成显式开关并与摘要、翻译放在一起，用户才知道它何时生效。
+            */}
+            <button
+              className={clsx('ff-btn !px-2 !py-1 text-[11px]')}
+              aria-pressed={ui.learningEnabled}
+              style={
+                ui.learningEnabled
+                  ? {
+                      background: 'var(--ff-accent-soft)',
+                      borderColor: 'var(--ff-accent)',
+                      color: 'var(--ff-accent-text)',
+                    }
+                  : undefined
+              }
+              onClick={() => setUi({ learningEnabled: !ui.learningEnabled })}
+              title={
+                ui.learningEnabled
+                  ? '关闭英语学习模式：选中文字不再弹出查词卡片'
+                  : '开启英语学习模式：选中文字可查词、AI 讲解、加入生词本'
+              }
+            >
+              <GraduationCap size={12} /> 英语学习
+            </button>
+
+            {!article.hasFulltext ? (
               <button
-                className="ff-btn ff-btn-ghost !px-1.5 !py-1"
-                onClick={() => void selectAdjacent(-1)}
-                disabled={navIndex <= 0}
-                title="上一篇 (k)"
+                className="ff-btn !px-2 !py-1 text-[11px]"
+                onClick={() => void fetchFulltext(article.id)}
+                disabled={fetchingFulltext}
               >
-                <ArrowUp size={13} />
+                {fetchingFulltext ? <Spinner /> : <Newspaper size={12} />} 抓取全文
               </button>
-              <span className="whitespace-nowrap tabular-nums">
-                第 {navIndex + 1} / {totalInList} 篇
+            ) : (
+              <span className="ff-chip">
+                <Check size={10} /> 全文
               </span>
-              <button
-                className="ff-btn ff-btn-ghost !px-1.5 !py-1"
-                onClick={() => void selectAdjacent(1)}
-                // 已加载的最后一篇后面还有页时，store 会顺手 loadMore，别在这里提前禁掉。
-                disabled={navIndex >= totalInList - 1 && !nextCursor}
-                title="下一篇 (j)"
-              >
-                <ArrowDown size={13} />
-              </button>
-            </div>
-          ) : null}
+            )}
+
+            {feed?.fullTextOnOpenEnabled ? <span className="ff-chip">打开即全文</span> : null}
+            {feed?.aiSummaryOnOpenEnabled ? <span className="ff-chip">打开即摘要</span> : null}
+
+            {navIndex >= 0 ? (
+              <div className="ml-auto flex items-center gap-1 text-[11px]" style={{ color: 'var(--ff-muted)' }}>
+                <button
+                  className="ff-btn ff-btn-ghost !px-1.5 !py-1"
+                  onClick={() => void selectAdjacent(-1)}
+                  disabled={navIndex <= 0}
+                  title="上一篇 (k)"
+                >
+                  <ArrowUp size={13} />
+                </button>
+                <span className="whitespace-nowrap tabular-nums">
+                  第 {navIndex + 1} / {totalInList} 篇
+                </span>
+                <button
+                  className="ff-btn ff-btn-ghost !px-1.5 !py-1"
+                  onClick={() => void selectAdjacent(1)}
+                  // 已加载的最后一篇后面还有页时，store 会顺手 loadMore，别在这里提前禁掉。
+                  disabled={navIndex >= totalInList - 1 && !nextCursor}
+                  title="下一篇 (j)"
+                >
+                  <ArrowDown size={13} />
+                </button>
+              </div>
+            ) : null}
+          </div>
         </div>
       </header>
 
@@ -613,154 +675,158 @@ export function ArticleReader() {
         className="min-h-0 flex-1 overflow-y-auto px-6 py-4"
         onScroll={handleScroll}
       >
-        {article.isFiltered ? (
-          <div
-            className="mb-3 flex items-start gap-2 rounded-md border px-3 py-2 text-[11.5px] leading-relaxed"
-            style={WARNING_TONE}
-          >
-            <Filter size={13} className="mt-0.5 shrink-0" />
-            <div>
-              <span className="font-medium">这篇文章被过滤规则挡下了：</span>
-              {filterReasonText(article.filterReason)}
-              <span className="ml-1 opacity-75">
-                （默认不在列表里显示，可在侧栏单源视图打开「显示已过滤文章」查看）
-              </span>
+        <div className="ff-reading-column">
+          {article.isFiltered ? (
+            <div
+              className="mb-3 flex items-start gap-2 rounded-md border px-3 py-2 text-[11.5px] leading-relaxed"
+              style={WARNING_TONE}
+            >
+              <Filter size={13} className="mt-0.5 shrink-0" />
+              <div>
+                <span className="font-medium">这篇文章被过滤规则挡下了：</span>
+                {filterReasonText(article.filterReason)}
+                <span className="ml-1 opacity-75">
+                  （默认不在列表里显示，可在侧栏单源视图打开「显示已过滤文章」查看）
+                </span>
+              </div>
             </div>
-          </div>
-        ) : null}
+          ) : null}
 
-        {showSummary ? (
-          <section
-            className="mb-4 rounded-lg border p-3"
-            style={{ background: 'var(--ff-surface-2)', borderColor: 'var(--ff-border)' }}
-          >
-            <div className="mb-1.5 flex items-center gap-1.5">
-              <Sparkles size={13} style={{ color: 'var(--ff-accent)' }} />
-              <span className="text-[12px] font-medium">AI 摘要</span>
-              {generating ? (
-                <span className="text-[10px]" style={{ color: 'var(--ff-faint)' }}>
-                  生成中…
-                </span>
+          {showSummary ? (
+            <section
+              className="mb-4 rounded-lg border p-3"
+              style={{ background: 'var(--ff-surface-2)', borderColor: 'var(--ff-border)' }}
+            >
+              <div className="mb-1.5 flex items-center gap-1.5">
+                <Sparkles size={13} style={{ color: 'var(--ff-accent)' }} />
+                <span className="text-[12px] font-medium">AI 摘要</span>
+                {generating ? (
+                  <span className="text-[10px]" style={{ color: 'var(--ff-faint)' }}>
+                    生成中…
+                  </span>
+                ) : null}
+                {queued ? (
+                  <span className="text-[10px]" style={{ color: 'var(--ff-faint)' }}>
+                    排队中
+                  </span>
+                ) : null}
+                {stalled ? (
+                  <span className="text-[10px]" style={{ color: 'var(--ff-faint)' }}>
+                    上次中断
+                  </span>
+                ) : null}
+                <span className="flex-1" />
+                <button
+                  className="ff-btn ff-btn-ghost !p-1"
+                  onClick={() => setSummaryOpen((value) => !value)}
+                  title={summaryOpen ? '收起' : '展开'}
+                >
+                  <ChevronUp
+                    size={13}
+                    style={{ transform: summaryOpen ? undefined : 'rotate(180deg)' }}
+                  />
+                </button>
+              </div>
+
+              {summaryOpen ? (
+                <div className="space-y-1.5">
+                  {summaryText ? (
+                    <div className="whitespace-pre-wrap text-[12.5px] leading-relaxed">
+                      {summaryText}
+                      {generating ? (
+                        <span
+                          className="ml-0.5 inline-block h-3 w-1 animate-pulse align-middle"
+                          style={{ background: 'var(--ff-accent)' }}
+                        />
+                      ) : null}
+                    </div>
+                  ) : null}
+
+                  {failed ? (
+                    <div className="flex items-center gap-2">
+                      <span className="flex-1 text-[12px]" style={{ color: 'var(--ff-danger)' }}>
+                        {summaryError}
+                      </span>
+                      <button
+                        className="ff-btn !px-2 !py-1 text-[11px]"
+                        onClick={() => void startSummary(article.id)}
+                        disabled={generating}
+                      >
+                        <Sparkles size={12} /> 重试
+                      </button>
+                    </div>
+                  ) : null}
+
+                  {queued || stalled ? (
+                    <div className="flex items-center gap-2">
+                      <span className="flex-1 text-[11.5px]" style={{ color: 'var(--ff-muted)' }}>
+                        {queued ? '摘要任务还在排队，上次生成未完成。' : '上次生成未完成，可重新生成。'}
+                      </span>
+                      <button
+                        className="ff-btn !px-2 !py-1 text-[11px]"
+                        onClick={() => void startSummary(article.id)}
+                        disabled={generating}
+                      >
+                        <Sparkles size={12} /> 重新生成
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
               ) : null}
-              {queued ? (
-                <span className="text-[10px]" style={{ color: 'var(--ff-faint)' }}>
-                  排队中
-                </span>
-              ) : null}
-              {stalled ? (
-                <span className="text-[10px]" style={{ color: 'var(--ff-faint)' }}>
-                  上次中断
-                </span>
-              ) : null}
-              <span className="flex-1" />
+            </section>
+          ) : null}
+
+          {translation.status === 'running' ? (
+            <div
+              className="mb-3 flex items-center gap-2 rounded-md border px-3 py-2 text-[11px]"
+              style={{ background: 'var(--ff-surface-2)', color: 'var(--ff-muted)' }}
+            >
+              <Loader2 size={12} className="animate-spin" /> 正在逐段翻译，已完成 {translation.progress} 段
+            </div>
+          ) : null}
+
+          {hasBody ? (
+            <div
+              ref={bodyRef}
+              className="ff-article prose max-w-none"
+              style={{ ...fontStyle, fontFamily: settings?.general.fontFamily === 'serif' ? 'Georgia, "Songti SC", serif' : undefined }}
+              onClick={handleBodyClick}
+              onPointerUp={learning.onPointerUp}
+              onDoubleClick={learning.onDoubleClick}
+              onMouseOver={handleVocabularyHover}
+              onMouseOut={handleVocabularyLeave}
+              onKeyDown={(event) => {
+                // 标记出来的词带 role=button/tabindex，键盘回车也要能打开。
+                if (event.key !== 'Enter' && event.key !== ' ') return;
+                const word = (event.target as HTMLElement | null)?.closest('[data-vocabulary-word]');
+                if (!(word instanceof HTMLElement)) return;
+                event.preventDefault();
+                openWordPopover(word);
+              }}
+              dangerouslySetInnerHTML={{ __html: html }}
+            />
+          ) : (
+            // 只有标题的条目在 RSS 里很常见（尤其是聚合站），给个明确的下一步而不是一句「没有正文」。
+            <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
+              <Newspaper size={26} style={{ color: 'var(--ff-faint)' }} />
+              <div className="text-sm font-medium">这篇文章没有正文</div>
+              <p className="max-w-sm text-xs leading-relaxed" style={{ color: 'var(--ff-muted)' }}>
+                订阅源只提供了标题或摘要，可以尝试从原文抓取全文。
+              </p>
               <button
-                className="ff-btn ff-btn-ghost !p-1"
-                onClick={() => setSummaryOpen((value) => !value)}
-                title={summaryOpen ? '收起' : '展开'}
+                className="ff-btn ff-btn-primary !text-[12px]"
+                onClick={() => void fetchFulltext(article.id)}
+                disabled={fetchingFulltext}
               >
-                <ChevronUp
-                  size={13}
-                  style={{ transform: summaryOpen ? undefined : 'rotate(180deg)' }}
-                />
+                {fetchingFulltext ? <Spinner /> : <Newspaper size={12} />} 抓取全文
               </button>
             </div>
+          )}
 
-            {summaryOpen ? (
-              <div className="space-y-1.5">
-                {summaryText ? (
-                  <div className="whitespace-pre-wrap text-[12.5px] leading-relaxed">
-                    {summaryText}
-                    {generating ? (
-                      <span
-                        className="ml-0.5 inline-block h-3 w-1 animate-pulse align-middle"
-                        style={{ background: 'var(--ff-accent)' }}
-                      />
-                    ) : null}
-                  </div>
-                ) : null}
-
-                {failed ? (
-                  <div className="flex items-center gap-2">
-                    <span className="flex-1 text-[12px]" style={{ color: 'var(--ff-danger)' }}>
-                      {summaryError}
-                    </span>
-                    <button
-                      className="ff-btn !px-2 !py-1 text-[11px]"
-                      onClick={() => void startSummary(article.id)}
-                      disabled={generating}
-                    >
-                      <Sparkles size={12} /> 重试
-                    </button>
-                  </div>
-                ) : null}
-
-                {queued || stalled ? (
-                  <div className="flex items-center gap-2">
-                    <span className="flex-1 text-[11.5px]" style={{ color: 'var(--ff-muted)' }}>
-                      {queued ? '摘要任务还在排队，上次生成未完成。' : '上次生成未完成，可重新生成。'}
-                    </span>
-                    <button
-                      className="ff-btn !px-2 !py-1 text-[11px]"
-                      onClick={() => void startSummary(article.id)}
-                      disabled={generating}
-                    >
-                      <Sparkles size={12} /> 重新生成
-                    </button>
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-          </section>
-        ) : null}
-
-        {translation.status === 'running' ? (
-          <div
-            className="mb-3 flex items-center gap-2 rounded-md border px-3 py-2 text-[11px]"
-            style={{ background: 'var(--ff-surface-2)', color: 'var(--ff-muted)' }}
-          >
-            <Loader2 size={12} className="animate-spin" /> 正在逐段翻译，已完成 {translation.progress} 段
-          </div>
-        ) : null}
-
-        {hasBody ? (
-          <div
-            ref={bodyRef}
-            className="ff-article prose max-w-none"
-            style={{ ...fontStyle, fontFamily: settings?.general.fontFamily === 'serif' ? 'Georgia, "Songti SC", serif' : undefined }}
-            onClick={handleBodyClick}
-            onPointerUp={learning.onPointerUp}
-            onDoubleClick={learning.onDoubleClick}
-            onKeyDown={(event) => {
-              // 标记出来的词带 role=button/tabindex，键盘回车也要能打开。
-              if (event.key !== 'Enter' && event.key !== ' ') return;
-              const word = (event.target as HTMLElement | null)?.closest('[data-vocabulary-word]');
-              if (!(word instanceof HTMLElement)) return;
-              event.preventDefault();
-              openWordPopover(word);
-            }}
-            dangerouslySetInnerHTML={{ __html: html }}
-          />
-        ) : (
-          // 只有标题的条目在 RSS 里很常见（尤其是聚合站），给个明确的下一步而不是一句「没有正文」。
-          <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
-            <Newspaper size={26} style={{ color: 'var(--ff-faint)' }} />
-            <div className="text-sm font-medium">这篇文章没有正文</div>
-            <p className="max-w-sm text-xs leading-relaxed" style={{ color: 'var(--ff-muted)' }}>
-              订阅源只提供了标题或摘要，可以尝试从原文抓取全文。
-            </p>
-            <button
-              className="ff-btn ff-btn-primary !text-[12px]"
-              onClick={() => void fetchFulltext(article.id)}
-              disabled={fetchingFulltext}
-            >
-              {fetchingFulltext ? <Spinner /> : <Newspaper size={12} />} 抓取全文
-            </button>
-          </div>
-        )}
-
-        <footer className="mt-8 border-t pt-3 text-[11px]" style={{ color: 'var(--ff-faint)' }}>
-          来源：{hostOf(article.link)} {article.sourceLanguage ? `· 语言 ${article.sourceLanguage}` : ''}
-        </footer>
+          <footer className="mt-8 border-t pt-3 text-[11px]" style={{ color: 'var(--ff-faint)' }}>
+            来源：{hostOf(article.link)} {article.sourceLanguage ? `· 语言 ${article.sourceLanguage}` : ''}
+          </footer>
+        </div>
       </div>
 
       {learning.cards.length ? (
@@ -770,6 +836,7 @@ export function ArticleReader() {
           onCloseCard={learning.closeCard}
           onRetry={learning.retry}
           onSave={(id) => { void learning.saveWord(id); }}
+          onSaveCustom={(id, term, definition) => { void learning.saveCustomWord(id, term, definition); }}
           onExplainDetail={(id) => { void learning.explainDetail(id); }}
           onRetryDetail={learning.retryDetail}
           onOpenSettings={() => setUi({ settingsOpen: true })}
@@ -782,11 +849,13 @@ export function ArticleReader() {
           anchor={wordPopover.rect}
           sentence={popoverSentence.current}
           adding={addingSentence}
-          onClose={() => setWordPopover(null)}
+          onClose={closeWordPopover}
+          onHoverStart={cancelHoverClose}
+          onHoverEnd={scheduleHoverClose}
           onAddSentence={() => { void handleAddSentence(); }}
           onDelete={() => { void handleDeleteWord(); }}
           onOpenVocabulary={() => {
-            setWordPopover(null);
+            closeWordPopover();
             setUi({ vocabularyOpen: true });
           }}
         />

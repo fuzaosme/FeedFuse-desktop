@@ -27,6 +27,7 @@ export function FeedMenu({ feed }: { feed: Feed }) {
   const container = useRef<HTMLDivElement | null>(null);
   const reloadSnapshot = useAppStore((state) => state.reloadSnapshot);
   const toast = useAppStore((state) => state.toast);
+  const askConfirm = useAppStore((state) => state.askConfirm);
   const categories = useAppStore((state) => state.categories);
 
   useEffect(() => {
@@ -78,7 +79,12 @@ export function FeedMenu({ feed }: { feed: Feed }) {
   };
 
   const handleDelete = async () => {
-    if (!window.confirm(`删除订阅「${feed.title}」及其所有文章？此操作不可撤销。`)) return;
+    const confirmed = await askConfirm({
+      title: '删除订阅',
+      message: `删除订阅「${feed.title}」及其所有文章？此操作不可撤销。`,
+      confirmLabel: '删除',
+    });
+    if (!confirmed) return;
     setBusy(true);
     try {
       await api.deleteFeed(feed.id);

@@ -87,13 +87,17 @@ function report(label, target) {
 
 const serverEntry = join(SERVER_DIST, 'server.mjs');
 const serverSchema = join(SERVER_DIST, 'schema.sql');
-const serverDictionary = join(SERVER_DIST, 'en-zh.json');
+const serverDictionary = join(SERVER_DIST, 'builtin');
+const serverPhrases = join(SERVER_DIST, 'phrases.json');
+const serverZhCore = join(SERVER_DIST, 'en-zh.json');
 const webEntry = join(WEB_DIST, 'index.html');
 
 const missing = [
   [serverEntry, 'server/dist/server.mjs'],
   [serverSchema, 'server/dist/schema.sql'],
-  [serverDictionary, 'server/dist/en-zh.json'],
+  [serverDictionary, 'server/dist/builtin/'],
+  [serverPhrases, 'server/dist/phrases.json'],
+  [serverZhCore, 'server/dist/en-zh.json'],
   [webEntry, 'web/dist/index.html'],
 ].filter(([path]) => !existsSync(path));
 
@@ -114,9 +118,11 @@ mkdirSync(join(RESOURCES, 'web'), { recursive: true });
 
 cpSync(serverEntry, join(RESOURCES, 'server', 'server.mjs'));
 cpSync(serverSchema, join(RESOURCES, 'server', 'schema.sql'));
-cpSync(serverDictionary, join(RESOURCES, 'server', 'en-zh.json'));
+cpSync(serverDictionary, join(RESOURCES, 'server', 'builtin'), { recursive: true });
+cpSync(serverPhrases, join(RESOURCES, 'server', 'phrases.json'));
+cpSync(serverZhCore, join(RESOURCES, 'server', 'en-zh.json'));
 // 故意不带 .map：sourcemap 只在本地调试有用，随包分发纯属占体积。
-console.log(`▸ 已写入 server.mjs / schema.sql / en-zh.json`);
+console.log(`▸ 已写入 server.mjs / schema.sql / builtin/ / phrases.json / en-zh.json`);
 
 /* ------------------------------ 4. 前端产物 ------------------------------ */
 
@@ -252,6 +258,8 @@ console.log(`\n▸ 产物清单 ${dim(RESOURCES)}`);
 const parts = [
   ['server/server.mjs', join(RESOURCES, 'server', 'server.mjs')],
   ['server/schema.sql', join(RESOURCES, 'server', 'schema.sql')],
+  ['server/builtin/', join(RESOURCES, 'server', 'builtin')],
+  ['server/phrases.json', join(RESOURCES, 'server', 'phrases.json')],
   ['server/en-zh.json', join(RESOURCES, 'server', 'en-zh.json')],
   ['server/node_modules/', join(RESOURCES, 'server', 'node_modules')],
   ['web/', join(RESOURCES, 'web')],

@@ -3,6 +3,7 @@ import { Trash2, Upload } from 'lucide-react';
 import * as api from '../api/endpoints';
 import type { DictionarySummary } from '../api/types';
 import { EmptyState, Spinner, Toggle } from './ui';
+import { useAppStore } from '../store/app';
 
 /** 用户下载到的词典就是这些扩展名，多选时一次框住整本词典的全部文件。 */
 const ACCEPT = '.mdx,.mdd,.ifo,.idx,.idx.gz,.dict,.dict.dz,.syn';
@@ -22,8 +23,9 @@ function formatLabel(format: DictionarySummary['format']): string {
 /**
  * 设置中心 → 词典。
  *
- * 内置核心词库固定置顶且不可停用（它是「装好就能查」的兜底），
- * 用户导入的词典可以单独停用或删除，停用即从查词链路里摘掉。
+ * 三本内置词典（中英核心词库 / WordNet / 词组词典）与用户导入的词典一样可以单独停用，
+ * 停用即从查词链路里摘掉；内置词典不能删除，因为它们随应用分发、删了也回不来。
+ * 停用状态存在设置里（`dictionaries.disabledIds`），不走 dictionaries 表。
  */
 export function DictionaryPanel({ onToast }: { onToast: (message: string, tone: 'success' | 'error' | 'info') => void }) {
   const [dictionaries, setDictionaries] = useState<DictionarySummary[]>([]);
@@ -33,6 +35,7 @@ export function DictionaryPanel({ onToast }: { onToast: (message: string, tone: 
   const [progress, setProgress] = useState<{ index: number; total: number; percent: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement | null>(null);
+  const askConfirm = useAppStore((state) => state.askConfirm);
 
   const load = useCallback(async () => {
     try {
@@ -82,7 +85,12 @@ export function DictionaryPanel({ onToast }: { onToast: (message: string, tone: 
   };
 
   const handleDelete = async (dictionary: DictionarySummary) => {
-    if (!window.confirm(`删除「${dictionary.name}」？原文件副本也会一起删掉，之后需要重新导入。`)) return;
+    const confirmed = await askConfirm({
+      title: '删除词典',
+      message: `删除「${dictionary.name}」？原文件副本也会一起删掉，之后需要重新导入。`,
+      confirmLabel: '删除',
+    });
+    if (!confirmed) return;
     setBusyId(dictionary.id);
     try {
       await api.deleteDictionary(dictionary.id);
@@ -100,7 +108,8 @@ export function DictionaryPanel({ onToast }: { onToast: (message: string, tone: 
       <div>
         <div className="text-[13px] font-medium">词典</div>
         <p className="mt-0.5 text-[11px] leading-relaxed" style={{ color: 'var(--ff-muted)' }}>
-          内置词库装好即用。这里可以导入 MDict（.mdx + .mdd）和 StarDict（.ifo + .idx + .dict）词典，
+          内置三本词库装好即用，可以单独开关：同时开启时中文释义在前、英英释义在后。
+          这里也可以导入 MDict（.mdx + .mdd）和 StarDict（.ifo + .idx + .dict）词典，
           导入的文件会复制到应用数据目录，原下载文件删掉也不影响查词。
         </p>
       </div>
@@ -184,7 +193,7 @@ export function DictionaryPanel({ onToast }: { onToast: (message: string, tone: 
                     aria-label={`删除 ${dictionary.name}`}
                     disabled={dictionary.builtin || busyId === dictionary.id}
                     onClick={() => void handleDelete(dictionary)}
-                    title={dictionary.builtin ? '内置词库不能删除' : '删除词典'}
+                    title={dictionary.builtin ? '内置词库随应用分发，不能删除（可以停用）' : '删除词典'}
                   >
                     {busyId === dictionary.id ? <Spinner /> : <Trash2 size={13} />}
                   </button>
@@ -194,12 +203,9 @@ export function DictionaryPanel({ onToast }: { onToast: (message: string, tone: 
               <div className="mt-1 border-t pt-1" style={{ borderColor: 'var(--ff-border)' }}>
                 <Toggle
                   label="启用"
-                  description={dictionary.builtin ? '内置词库始终可用，不能停用。' : '停用后查词会跳过这本词典。'}
+                  description={dictionary.builtin ? '内置词典，停用后查词会跳过它。' : '停用后查词会跳过这本词典。'}
                   checked={dictionary.enabled}
-                  onChange={(value) => {
-                    if (dictionary.builtin) return;
-                    void handleToggle(dictionary, value);
-                  }}
+                  onChange={(value) => void handleToggle(dictionary, value)}
                 />
               </div>
             </li>

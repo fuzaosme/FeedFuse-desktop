@@ -2,7 +2,7 @@
  * 给正文里的生词加标记。
  *
  * 只处理文本节点：原 HTML 结构、链接、图片、行内样式全部保持原样，
- * 标记出来的 `<span data-vocabulary-word>` 自带词条写法，点击时据此回查生词本。
+ * 标记出来的 `<span data-vocabulary-word>` 自带词条写法，悬停/点击时据此回查生词本。
  * 词组可能被 `<b>`/`<a>` 切开，此时每个片段都指向同一个词条，点哪一段都能打开。
  */
 import { createVocabularyMatcher, type VocabularyMatcher } from './vocabularyMatch';
@@ -68,7 +68,8 @@ export function emphasizeVocabulary(html: string, terms: string[] | VocabularyMa
           mark.setAttribute('data-vocabulary-term', match.term);
           mark.setAttribute('role', 'button');
           mark.setAttribute('tabindex', '0');
-          mark.setAttribute('title', `生词本：${match.term}`);
+          // 悬停会直接展开释义浮层，不再用原生 title 提示，避免两个提示同时出现。
+          mark.setAttribute('aria-label', `生词本：${match.term}`);
           mark.textContent = span.node.data.slice(from, to);
           fragment.append(mark);
           offset = to;

@@ -39,6 +39,7 @@ export function Sidebar() {
   const createCategory = useAppStore((state) => state.createCategory);
   const renameCategory = useAppStore((state) => state.renameCategory);
   const deleteCategory = useAppStore((state) => state.deleteCategory);
+  const askConfirm = useAppStore((state) => state.askConfirm);
   const reorderCategories = useAppStore((state) => state.reorderCategories);
 
   // 折叠状态只影响这一屏的显示，不进 store：它不参与请求，也不需要跨重启记忆。
@@ -110,7 +111,12 @@ export function Sidebar() {
 
   const handleDeleteCategory = async (id: string, name: string, feedCount: number) => {
     const moved = feedCount > 0 ? `分类下的 ${feedCount} 个订阅会归入「未分类」，` : '分类下的订阅会归入「未分类」，';
-    if (!window.confirm(`删除分类「${name}」？${moved}订阅与已抓取的文章都会保留。`)) return;
+    const confirmed = await askConfirm({
+      title: '删除分类',
+      message: `删除分类「${name}」？${moved}订阅与已抓取的文章都会保留。`,
+      confirmLabel: '删除',
+    });
+    if (!confirmed) return;
     await deleteCategory(id);
   };
 

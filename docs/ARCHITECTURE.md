@@ -77,7 +77,7 @@ sidecar 在 `serve()` 的监听回调里打印一行（`server/src/main.ts`）�
 | `app_settings` | 单行表（`id = 1`），业务配置存 `json`，密钥单独放在 `ai_api_key` / `translation_api_key` |
 | `system_logs` | 运行日志，`level` / `category` / `details` / `context_json`，按保留天数裁剪 |
 | `vocabulary_entries` | 生词本，`normalized_term` 唯一，带来源文章；例句存 `sentences` JSON 数组（最多 5 条，先进先出），`source_sentence` 保留为最早一句的镜像 |
-| `dictionaries` / `dictionary_entries` | 词典元信息与词头；内置核心词库是只读资源 `server/assets/en-zh.json`，不进库。文件型词典（MDX / StarDict）在这里只存 `record_start` / `record_end`，释义回原文件读 |
+| `dictionaries` / `dictionary_entries` | 词典元信息与词头；两本内置词典是只读资源（`server/assets/builtin/` 分片 + `phrases.json`），不进库。文件型词典（MDX / StarDict）在这里只存 `record_start` / `record_end`，释义回原文件读 |
 | `articles_fts` | FTS5 虚拟表（`title` / `summary` / `content`，`content='articles'`），由三个触发器与 `articles` 同步 |
 | `dictionary_entries_fts` | 词条 FTS5，同样由触发器维护 |
 
@@ -233,7 +233,22 @@ event: done   data: {}
 event: error  data: {"message":"..."}
 ```
 
-前端把「用户导入词典 → 内置核心词库 → 用户词典模糊兜底」的优先级合并在服务端完成；
+查词优先级全部合并在服务端（`domain/dictionaries.ts` 的 `lookupWord`）：
+
+1. 用户导入词典（精确命中，按导入先后）；
+2. 启用中的内置词典——三本独立数据源：中英核心词库 / WordNet / 词组词典，
+   同一词头命中多本时合成一条（行序：词组 → 中文 → 英英，音标优先 IPA）；
+3. 词形还原后的 1～2 步；
+4. 用户词典的 FTS / 前缀模糊兜底。
+
+三本内置词典的开关存在 `app_settings` 的 `dictionaries.disabledIds`（默认全开，存「停用了哪些」）。
+设置页整包保存不会覆盖它，只有词典面板的 PATCH 能改——避免草稿快照把开关写回去。
+
+第 4 步是「选中的是变形」的出路，规则在 `lib/morphology.ts`：候选必须带词性
+（`-ed` / `-ing` 只能来自动词，`-er` / `-est` 只能来自形容词），并且**必须真的存在于词典**。
+变形词自己也是词条时（`studied` 作形容词）两条释义合并返回，中间插一行「（studied 是 study 的过去式/过去分词）」。
+词组只还原一个位置：`looked forward to → look forward to`。
+
 划词侧的选区补全、整句裁剪、词组回退在 `web/src/features/learning/` 里，和原版保持同一套规则。
 
 ### 文件型词典（MDX / StarDict）

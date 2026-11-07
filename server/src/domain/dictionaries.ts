@@ -4,12 +4,13 @@ import { NotFoundError, ValidationError } from '../http/envelope';
 import { dictionaryLookupCandidates, normalizeVocabularyTerm } from '../lib/englishLearning';
 import { getActiveConfig } from '../config';
 import {
-  BUILTIN_DICTIONARY_DESCRIPTION,
-  BUILTIN_DICTIONARY_ID,
-  BUILTIN_DICTIONARY_NAME,
-  builtinDictionaryEntryCount,
-  lookupBuiltinDictionary,
+  BUILTIN_SOURCES,
+  isBuiltinDictionaryId,
+  type BuiltinDictionaryEntry,
+  type BuiltinSource,
 } from './builtinDictionary';
+import { getSettings, setDictionaryEnabledSetting } from './settings';
+import { acceptsPos, lemmaCandidates, phraseVariants, type PartOfSpeech } from '../lib/morphology';
 import { detectFormat, groupDictionaryFiles, UnsupportedFileError, type DictionaryFileSet } from './dict/files';
 import { parseMdx } from './dict/mdict';
 import { parseStarDict } from './dict/stardict';
@@ -76,8 +77,7 @@ interface DictionaryRow {
   size_bytes: number | null;
 }
 
-function mapDictionary(row: DictionaryRow): DictionarySummary {
-  return {
+function mapDictionary(row: DictionaryRow): DictionarySummary {  return {
     id: String(row.id),
     name: row.name,
     entryCount: row.entry_count,
@@ -113,41 +113,52 @@ function parseMeta(metaJson: string | null): Record<string, unknown> {
   }
 }
 
-/** 内置词典始终排在最前：它是默认可用、且无需用户维护的那一本。 */
-function builtinSummary(): DictionarySummary {
-  try {
-    return {
-      id: BUILTIN_DICTIONARY_ID,
-      name: BUILTIN_DICTIONARY_NAME,
-      entryCount: builtinDictionaryEntryCount(),
-      enabled: true,
-      createdAt: '',
-      builtin: true,
-      description: BUILTIN_DICTIONARY_DESCRIPTION,
-      format: 'inline',
-      storage: 'sqlite',
-      contentType: 'text',
-    };
-  } catch {
-    // 文件缺失不该让整个设置页打不开：降级成一条可见的说明，查词继续走用户词典。
-    return {
-      id: BUILTIN_DICTIONARY_ID,
-      name: BUILTIN_DICTIONARY_NAME,
-      entryCount: 0,
-      enabled: true,
-      createdAt: '',
-      builtin: true,
-      description: '内置词典文件缺失，请重新构建或部署 server/assets/en-zh.json。',
-      format: 'inline',
-      storage: 'sqlite',
-      contentType: 'text',
-    };
-  }
+/**
+ * 内置词典的启用状态存在设置里（它们不在 dictionaries 表里）。
+ * 默认全开：存的是「停用了哪些」，所以升级新增的词典不会被历史设置意外关掉。
+ */
+function activeBuiltinSources(disabled: ReadonlySet<string>): BuiltinSource[] {
+  return BUILTIN_SOURCES.filter((source) => !disabled.has(source.id));
+}
+
+function builtinSummaries(): DictionarySummary[] {
+  const disabled = new Set(getSettings().dictionaries.disabledIds);
+  return BUILTIN_SOURCES.map((source) => {
+    const enabled = !disabled.has(source.id);
+    try {
+      return {
+        id: source.id,
+        name: source.name,
+        entryCount: source.entryCount(),
+        enabled,
+        createdAt: '',
+        builtin: true,
+        description: source.description,
+        format: 'inline' as const,
+        storage: 'sqlite' as const,
+        contentType: 'text' as const,
+      };
+    } catch {
+      // 文件缺失不该让整个设置页打不开：降级成一条可见的说明，查词继续走其它词典。
+      return {
+        id: source.id,
+        name: source.name,
+        entryCount: 0,
+        enabled,
+        createdAt: '',
+        builtin: true,
+        description: '词典文件缺失，请重新构建（见 server/assets/README.md）。',
+        format: 'inline' as const,
+        storage: 'sqlite' as const,
+        contentType: 'text' as const,
+      };
+    }
+  });
 }
 
 export function listDictionaries(): DictionarySummary[] {
   return [
-    builtinSummary(),
+    ...builtinSummaries(),
     ...getDb()
       .all<DictionaryRow>(
         `select id, name, entry_count, enabled, created_at, format, storage, content_type,
@@ -417,7 +428,7 @@ function relativizeMeta(source: DictionarySource): Record<string, unknown> {
 }
 
 export function deleteDictionary(id: string): void {
-  if (id === BUILTIN_DICTIONARY_ID) throw new ValidationError('内置核心词库是默认词典，不能删除');
+  if (isBuiltinDictionaryId(id)) throw new ValidationError('内置词典随应用分发，不能删除（可以停用）');
   const numeric = Number(id);
   const row = getDb().get<{ id: number; source_dir: string | null }>(
     'select id, source_dir from dictionaries where id = ?',
@@ -439,7 +450,12 @@ export function deleteDictionary(id: string): void {
 }
 
 export function setDictionaryEnabled(id: string, enabled: boolean): DictionarySummary {
-  if (id === BUILTIN_DICTIONARY_ID) throw new ValidationError('内置核心词库是默认词典，不能停用');
+  if (isBuiltinDictionaryId(id)) {
+    setDictionaryEnabledSetting(id, enabled);
+    const summary = builtinSummaries().find((item) => item.id === id);
+    if (!summary) throw new NotFoundError('词典不存在');
+    return summary;
+  }
   const numeric = Number(id);
   const db = getDb();
   const updated = db.run('update dictionaries set enabled = ? where id = ?', enabled, numeric);
@@ -535,14 +551,16 @@ function mapEntry(row: LookupRow, definition: string): DictionaryEntry {
 }
 
 /**
- * 查词顺序与原版一致：
- * 1. 用户导入/安装的词典（精确命中，按导入先后排序）；
- * 2. 内置核心词库（随应用分发的那份 en-zh.json）；
- * 3. 用户词典的前缀/FTS 模糊兜底，保证输入变形也能查到。
+ * 查词顺序：
+ *   1. 用户导入/安装的词典（精确命中，按导入先后）；
+ *   2. 启用中的内置词典（中英核心词库 / WordNet / 词组词典），同一词头命中多本时合成一条释义；
+ *   3. 词形还原后的 1～2 步（studied → study，looked forward to → look forward to）；
+ *   4. 用户词典的前缀 / FTS 模糊兜底。
  *
- * 内置词典排在用户词典之后，是因为用户导入的词典往往更专业、更有针对性。
- * 文件型词典的释义要回原文件读，读失败（文件被挪走）时继续尝试下一个候选，
- * 不能因为一本词典坏了就让整个查词失败。
+ * 内置词典是否参与由设置决定（`dictionaries.disabledIds`），每次查词只读一次设置。
+ * 三本都停用也不会报错：查不到就是查不到。
+ * 第 3 步的规则见 lib/morphology.ts：候选必须带词性、且真的在词典里存在，
+ * 否则 `us` 会被解释成 `use`。
  */
 export function lookupWord(rawTerm: string): DictionaryLookupResult {
   const term = (rawTerm ?? '').trim();
@@ -550,61 +568,256 @@ export function lookupWord(rawTerm: string): DictionaryLookupResult {
 
   const normalized = normalizeVocabularyTerm(term);
   if (!normalized) throw new ValidationError('查询词不能为空', { term: 'required' });
+
   const candidates = dictionaryLookupCandidates(normalized);
-  const db = getDb();
+  const sources = activeBuiltinSources(new Set(getSettings().dictionaries.disabledIds));
+  const direct = findExact(candidates, sources);
 
-  if (candidates.length > 0) {
-    const placeholders = candidates.map(() => '?').join(', ');
-    const stored = db.all<LookupRow>(
-      `select e.term, e.definition, e.phonetic, d.name, e.normalized_term,
-              d.id as dict_id, d.storage, d.content_type, d.format,
-              d.source_file, d.resource_file, d.meta_json,
-              e.record_start, e.record_end
-       from dictionary_entries e
-       join dictionaries d on d.id = e.dictionary_id
-       where d.enabled = 1 and e.normalized_term in (${placeholders})
-       order by d.created_at asc, d.id asc, e.id asc`,
-      ...candidates,
-    );
-
-    // 按候选顺序取最高优先级的一行：同一个词在多个词典里出现时，先导入的胜出。
-    const byTerm = new Map<string, LookupRow[]>();
-    for (const row of stored) {
-      const list = byTerm.get(row.normalized_term);
-      if (list) list.push(row);
-      else byTerm.set(row.normalized_term, [row]);
+  if (!normalized.includes(' ')) {
+    const lemma = resolveLemma(candidates, sources);
+    if (lemma) {
+      const base = findExact([lemma.lemma], sources);
+      // 变形词自己也可能是词条（studied 是形容词、tired 是形容词、running 是名词）。
+      // 两个都有时不能只给一个：选 studied 的人多半要 study，但 studied 的形容词义也是真的。
+      if (base) return { term, entries: [mergeInflection(direct, base, lemma)] };
     }
-    for (const candidate of candidates) {
-      for (const row of byTerm.get(candidate) ?? []) {
-        const definition = resolveRowContent(row);
-        if (definition) return { term, entries: [mapEntry(row, definition)] };
-      }
+    if (direct) return { term, entries: [direct] };
+  } else {
+    if (direct) return { term, entries: [direct] };
+    // 词组只还原一个词：looked forward to → look forward to。
+    for (const variant of phraseVariants(normalized)) {
+      const hit = findExact([variant], sources);
+      if (hit) return { term, entries: [hit] };
     }
   }
 
+  return { term, entries: fuzzyEntries(normalized) };
+}
+
+/** 精确查词：用户词典优先；没命中才由内置词典合成。 */
+function findExact(candidates: string[], sources: readonly BuiltinSource[]): DictionaryEntry | null {
+  if (!candidates.length) return null;
+  const stored = findUserDictionaryRows(candidates);
+  if (stored) return stored;
   for (const candidate of candidates) {
-    let builtin;
-    try {
-      builtin = lookupBuiltinDictionary(candidate);
-    } catch {
+    const merged = mergeBuiltinHits(candidate, sources);
+    if (merged) return merged;
+  }
+  return null;
+}
+
+function safeLookup<T>(fn: () => T | null): T | null {
+  try {
+    return fn();
+  } catch {
+    // 内置资源缺失（打包漏文件）不能把整次查词变成 500，降级成「这本没查到」。
+    return null;
+  }
+}
+
+/**
+ * 内置词典命中合成。
+ *
+ * 三本是独立数据源，但用户看到的是**一张卡片**：中文释义在前，英英释义与例句跟在后面，
+ * 音标优先用 WordNet 的 IPA（中英词库那份是 ASCII 近似标音）。
+ * 只用一本时 dictionaryName 就是那本的名字；多本命中时用「 · 」连起来，卡片上能看到来源。
+ */
+function mergeBuiltinHits(term: string, sources: readonly BuiltinSource[]): DictionaryEntry | null {
+  const hits: Array<{ source: BuiltinSource; entry: BuiltinDictionaryEntry }> = [];
+  for (const source of sources) {
+    const entry = safeLookup(() => source.lookup(term));
+    if (entry) hits.push({ source, entry });
+  }
+  if (!hits.length) return null;
+  // 词组词典命中时它的释义必须排最前：百度式的一条短语中文释义比 WordNet 的动词拆分更直接，
+  // 而且 WordNet 一条多词词条能占满 10 行，不排前面就会被行数上限切掉。
+  hits.sort((a, b) => linePriority(a.source) - linePriority(b.source));
+
+  const lines: string[] = [];
+  for (const hit of hits) {
+    for (const line of hit.entry.meanings) if (!lines.includes(line)) lines.push(line);
+  }
+  const phonetic =
+    hits.find((hit) => hit.source.id === 'builtin-wordnet' && hit.entry.phonetic)?.entry.phonetic ??
+    hits.find((hit) => hit.entry.phonetic)?.entry.phonetic ??
+    null;
+
+  return {
+    term: hits[0].entry.term,
+    // 释义行数兜底：WordNet 单词最多 10 行 + 中文 6 行，再多卡片就成滚动了。
+    definition: lines.slice(0, 12).join('\n'),
+    phonetic,
+    dictionaryName: hits.map((hit) => hit.source.name).join(' · '),
+    contentType: 'text',
+  };
+}
+
+/** 用户词典精确命中：同一个词在多本词典里出现时，先导入的胜出。 */
+function findUserDictionaryRows(candidates: string[]): DictionaryEntry | null {
+  const db = getDb();
+  const placeholders = candidates.map(() => '?').join(', ');
+  const stored = db.all<LookupRow>(
+    `select e.term, e.definition, e.phonetic, d.name, e.normalized_term,
+            d.id as dict_id, d.storage, d.content_type, d.format,
+            d.source_file, d.resource_file, d.meta_json,
+            e.record_start, e.record_end
+     from dictionary_entries e
+     join dictionaries d on d.id = e.dictionary_id
+     where d.enabled = 1 and e.normalized_term in (${placeholders})
+     order by d.created_at asc, d.id asc, e.id asc`,
+    ...candidates,
+  );
+
+  const byTerm = new Map<string, LookupRow[]>();
+  for (const row of stored) {
+    const list = byTerm.get(row.normalized_term);
+    if (list) list.push(row);
+    else byTerm.set(row.normalized_term, [row]);
+  }
+  for (const candidate of candidates) {
+    for (const row of byTerm.get(candidate) ?? []) {
+      const definition = resolveRowContent(row);
+      if (definition) return mapEntry(row, definition);
+    }
+  }
+  return null;
+}
+
+/**
+ * 词典里这个词头有哪些词性。
+ * 内置词典里存了词性（WordNet 显式、中英词库从释义前缀推导）；用户导入的词表没有词性，
+ * 返回空串表示「未知」，此时 acceptsPos 一律放行——猜错一个用户自己的词，
+ * 比什么都查不到更容易被发现。
+ */
+function lexiconPos(term: string, sources: readonly BuiltinSource[]): { pos: string } | null {
+  let found = false;
+  let pos = '';
+  for (const source of sources) {
+    const entry = safeLookup(() => source.lookup(term));
+    if (!entry) continue;
+    found = true;
+    if (entry.pos) {
+      pos = entry.pos;
       break;
     }
-    if (builtin) {
-      return {
-        term,
-        entries: [
-          {
-            term: builtin.term,
-            definition: builtin.meanings.join('\n'),
-            phonetic: builtin.phonetic ?? null,
-            dictionaryName: BUILTIN_DICTIONARY_NAME,
-            contentType: 'text',
-          },
-        ],
-      };
+  }
+  if (found) return { pos };
+  const row = getDb().get<{ id: number }>(
+    `select e.id
+     from dictionary_entries e
+     join dictionaries d on d.id = e.dictionary_id
+     where d.enabled = 1 and e.normalized_term = ?
+     limit 1`,
+    term,
+  );
+  return row ? { pos: '' } : null;
+}
+
+interface ResolvedLemma {
+  lemma: string;
+  /** 命中的变形类型，用来给用户一句「这个词是 study 的过去式」。 */
+  label: string;
+}
+
+/** 变形类型 → 给用户看的中文说法。一条规则可能同时是两种形态（-ed 既是过去式也是过去分词）。 */
+const RULE_LABEL: Record<string, string> = {
+  possessive: '所有格',
+  'irregular-verb': '不规则变形',
+  'irregular-plural': '不规则复数',
+  'irregular-degree': '比较级/最高级',
+  'plural-es-is': '复数',
+  'plural-ies': '复数/第三人称单数',
+  'plural-es': '复数/第三人称单数',
+  'plural-es-s': '复数/第三人称单数',
+  'plural-s': '复数/第三人称单数',
+  'past-ied': '过去式/过去分词',
+  'past-double': '过去式/过去分词',
+  'past-ed': '过去式/过去分词',
+  'past-e': '过去式/过去分词',
+  'past-ck': '过去式/过去分词',
+  'ing-ie': '现在分词',
+  'ing-y': '现在分词',
+  'ing-double': '现在分词',
+  ing: '现在分词',
+  'ing-e': '现在分词',
+  'est-iest': '最高级',
+  'er-ier': '比较级',
+  'est-double': '最高级',
+  'er-double': '比较级',
+  est: '最高级',
+  er: '比较级',
+  'est-e': '最高级',
+  'er-e': '比较级',
+};
+
+/**
+ * 把候选形态还原成词典里真实存在的词头，按可信度取第一个。
+ *
+ * 这里不做「先查再说」——先验证词性、再验证存在性，两个都过才收。
+ * 单复数与过去式在拼写上会撞车（`used` 可能是 `use` 的过去式，`uses` 可能是 `use` 的三单），
+ * 但两者都指向同一个词头，所以不需要消歧；真正需要消的歧靠 score 顺序与词性过滤解决。
+ */
+function resolveLemma(
+  candidates: string[],
+  sources: readonly BuiltinSource[],
+): ResolvedLemma | null {
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    for (const item of lemmaCandidates(candidate)) {
+      if (seen.has(item.lemma)) continue;
+      seen.add(item.lemma);
+      const known = lexiconPos(item.lemma, sources);
+      if (!known) continue;
+      if (!acceptsPos(known.pos, item.pos as ReadonlySet<PartOfSpeech>)) continue;
+      return { lemma: item.lemma, label: RULE_LABEL[item.rule] ?? '变形' };
     }
   }
+  return null;
+}
 
+/**
+ * 把「选中形态」与「还原后的词头」合成一条释义。
+ *
+ * 形如：
+ *   adj. produced or marked by conscious design
+ *   （studied 是 study 的过去式/过去分词）
+ *   n. 学习, 研究, 学科
+ * 顺序是「选中的词自己的释义 → 一句说明 → 词头的释义」，因为用户查的毕竟是选中那个词。
+ */
+function mergeInflection(
+  surface: DictionaryEntry | null,
+  base: DictionaryEntry,
+  lemma: ResolvedLemma,
+): DictionaryEntry {
+  // 选中的形态自己不是词条 → 只有一个词头可给，不必加任何说明。
+  if (!surface) return base;
+  // 用户自己导入的词条说了算：不往里面掺内置词库的释义，免得自定义词表被稀释。
+  if (!isBuiltinName(surface.dictionaryName)) return surface;
+  const lines = surface.definition.split('\n');
+  lines.push(`（${surface.term} 是 ${base.term} 的${lemma.label}）`);
+  for (const line of base.definition.split('\n')) {
+    if (!lines.includes(line)) lines.push(line);
+  }
+  return {
+    ...surface,
+    definition: lines.slice(0, 12).join('\n'),
+  };
+}
+
+/** 合成释义时的行序：词组（最贴合该表达）→ 中英 → 英英。 */
+function linePriority(source: BuiltinSource): number {
+  if (source.id === 'builtin-phrases') return 0;
+  if (source.id === 'builtin-zh-core') return 1;
+  return 2;
+}
+
+function isBuiltinName(name: string): boolean {
+  return BUILTIN_SOURCES.some((source) => name.includes(source.name));
+}
+
+/** 前缀/FTS 模糊兜底：整词没收录时的最后一招。 */
+function fuzzyEntries(normalized: string): DictionaryEntry[] {
+  const db = getDb();
   let fuzzy: LookupRow[] = [];
   try {
     fuzzy = db.all<LookupRow>(
@@ -639,7 +852,7 @@ export function lookupWord(rawTerm: string): DictionaryLookupResult {
     const definition = resolveRowContent(row);
     if (definition) entries.push(mapEntry(row, definition));
   }
-  return { term, entries };
+  return entries;
 }
 
 /* ---------------------------- 词典内资源 ---------------------------- */

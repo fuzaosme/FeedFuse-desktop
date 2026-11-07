@@ -14,6 +14,9 @@ interface Props {
   sentence: string;
   adding: boolean;
   onClose: () => void;
+  /** 鼠标移入/移出浮层：悬停预览时用来保持浮层不消失。 */
+  onHoverStart?: () => void;
+  onHoverEnd?: () => void;
   onAddSentence: () => void;
   onDelete: () => void;
   onOpenVocabulary: () => void;
@@ -33,6 +36,8 @@ export function VocabularyWordPopover({
   sentence,
   adding,
   onClose,
+  onHoverStart,
+  onHoverEnd,
   onAddSentence,
   onDelete,
   onOpenVocabulary,
@@ -69,6 +74,8 @@ export function VocabularyWordPopover({
     const openedAt = Date.now();
     const onPointerDown = (event: PointerEvent) => {
       if (event.target instanceof Node && elementRef.current?.contains(event.target)) return;
+      // 点在正文里的生词上不算「点外部」：点击会就地切换浮层，不能让浮层先闪没。
+      if (event.target instanceof Element && event.target.closest('[data-vocabulary-word]')) return;
       onClose();
     };
     const onKeyDown = (event: KeyboardEvent) => {
@@ -107,13 +114,16 @@ export function VocabularyWordPopover({
       role="dialog"
       aria-label={`生词：${entry.term}`}
       data-testid="vocabulary-word-popover"
+      onMouseEnter={onHoverStart}
+      onMouseLeave={onHoverEnd}
       className="fixed z-[70] flex max-h-[calc(100vh-24px)] flex-col overflow-hidden rounded-xl border shadow-xl"
       style={{
         left: position?.left ?? 12,
         top: position?.top ?? 12,
         width,
-        background: 'var(--ff-surface)',
-        borderColor: 'var(--ff-border)',
+        // 和查词卡片保持一致：极淡的强调色底，只为把它从普通白面板里稍微区分出来。
+        background: 'var(--ff-accent-soft)',
+        borderColor: 'var(--ff-vocab-mark-hover)',
         boxShadow: 'var(--ff-shadow)',
         visibility: position ? 'visible' : 'hidden',
       }}
@@ -138,7 +148,7 @@ export function VocabularyWordPopover({
           </p>
         ) : (
           <p className="text-[12px]" style={{ color: 'var(--ff-muted)' }}>
-            收藏时没有拿到释义，可以到生词本里补上。
+            还没有填写释义，可以到生词本里补充自定义释义。
           </p>
         )}
 

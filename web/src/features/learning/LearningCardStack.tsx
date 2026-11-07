@@ -5,11 +5,13 @@ import LearningCard from './LearningCard';
 
 interface Props {
   cards: LearningCardState[];
-  /** 关闭整叠卡片（点击外部、Esc、滚动或跳转设置）。 */
+  /** 关闭整叠卡片（点击卡片外的区域、Esc、跳转设置，或重新划词查下一个）。 */
   onClose: () => void;
   onCloseCard: (id: number) => void;
   onRetry: (id: number) => void;
   onSave: (id: number) => void;
+  /** 词典查询失败时的自定义生词。 */
+  onSaveCustom: (id: number, term: string, definition: string) => void;
   onExplainDetail: (id: number) => void;
   /** 单词卡「详细解释」重新生成（绕缓存）。 */
   onRetryDetail: (id: number) => void;
@@ -17,9 +19,9 @@ interface Props {
 }
 
 /**
- * 一次选区可能解析出多个整词（例如跨过两个单词各选了一部分）。
+ * 一次选区只解析出一张卡片；仍保留叠放容器，便于以后扩展或同时展示多张。
  * 桌面端靠中栏与正文栏的分界线向左展开，高度跟随选区，方便对照原句。
- * 这里统一负责定位和关闭行为，按叠放顺序渲染每张词卡。
+ * 这里统一负责定位和关闭行为。
  */
 export default function LearningCardStack({
   cards,
@@ -27,6 +29,7 @@ export default function LearningCardStack({
   onCloseCard,
   onRetry,
   onSave,
+  onSaveCustom,
   onExplainDetail,
   onRetryDetail,
   onOpenSettings,
@@ -81,19 +84,14 @@ export default function LearningCardStack({
         onClose();
       }
     };
-    const onScroll = (event: Event) => {
-      if (event.target instanceof Node && elementRef.current?.contains(event.target)) return;
-      onClose();
-    };
+    // 滚动与改变窗口大小都不再收起卡片：查词时经常要上下翻着对照原文，
+    // 卡片一滚就消失等于逼用户重新划词。位置由上面的 ResizeObserver 重新夹取，
+    // 卡片是 fixed 定位，滚动时停在原地不跟着正文跑。
     document.addEventListener('pointerdown', onPointerDown, true);
     document.addEventListener('keydown', onKeyDown, true);
-    document.addEventListener('scroll', onScroll, true);
-    window.addEventListener('resize', onClose);
     return () => {
       document.removeEventListener('pointerdown', onPointerDown, true);
       document.removeEventListener('keydown', onKeyDown, true);
-      document.removeEventListener('scroll', onScroll, true);
-      window.removeEventListener('resize', onClose);
     };
   }, [onClose]);
 
@@ -117,6 +115,7 @@ export default function LearningCardStack({
           onDismiss={() => onCloseCard(card.id)}
           onRetry={() => onRetry(card.id)}
           onSave={() => onSave(card.id)}
+          onSaveCustom={(term, definition) => onSaveCustom(card.id, term, definition)}
           onExplainDetail={() => onExplainDetail(card.id)}
           onRetryDetail={() => onRetryDetail(card.id)}
           onOpenSettings={onOpenSettings}

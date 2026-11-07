@@ -389,13 +389,23 @@ section ul li > button:focus-visible {
 }
 
 
+/* 阅读列：标题、工具条、摘要与正文共用同一条列宽。
+   - 窗口小于约 1400px 时仍是 45rem 的舒适行宽，放不下时按 100% 收缩；
+   - 再往上列宽跟着窗口长（52vw），封顶 70rem——不会铺满整屏，长行仍在可读范围内；
+   - 整列居中而不是贴左：否则宽屏/全屏时右半边会空出一大片白。
+   标题与正文必须套同一个类，不然标题贴左、正文居中会看着错位。 */
+.ff-reading-column {
+  width: 100%;
+  max-width: min(100%, clamp(45rem, 52vw, 70rem));
+  margin-inline: auto;
+}
+
 /* 正文排版：不受 typography 插件 layer 影响地接管文字颜色与行宽。
    - 深色模式下插件默认的 --tw-prose-body 仍是浅色主题的灰，会直接变成"灰字黑底"。
-   - 行宽限制在 45rem，避免宽屏下单行过长影响阅读节奏。 */
+   - 行宽交给外层 .ff-reading-column 控制，这里只负责铺满该列。 */
 .ff-article {
   color: var(--ff-text);
-  /* 只限宽、不居中：阅读区标题与工具条都是左对齐，正文居中会显得错位 */
-  max-width: 45rem;
+  max-width: 100%;
 }
 
 .ff-article :where(p, li, td, th, dd, dt, blockquote, figcaption, h1, h2, h3, h4, h5, h6) {

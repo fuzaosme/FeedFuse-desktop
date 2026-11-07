@@ -25,6 +25,7 @@ export function ArticleList() {
   const selectArticle = useAppStore((state) => state.selectArticle);
   const loadMore = useAppStore((state) => state.loadMore);
   const markAllRead = useAppStore((state) => state.markAllRead);
+  const askConfirm = useAppStore((state) => state.askConfirm);
   const setUi = useAppStore((state) => state.setUi);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -105,7 +106,12 @@ export function ArticleList() {
 
   const handleMarkAllRead = async () => {
     // 全部已读不可撤销，先确认；文案里写清范围，免得用户以为清的是整个书库。
-    if (!window.confirm(`把「${title}」里的全部文章标为已读？只影响当前视图，无法撤销。`)) return;
+    const confirmed = await askConfirm({
+      title: '全部标为已读',
+      message: `把「${title}」里的全部文章标为已读？只影响当前视图，无法撤销。`,
+      confirmLabel: '标为已读',
+    });
+    if (!confirmed) return;
     // 范围已经在确认框里说清楚了，store 执行完会报数量，这里不再叠第二条 toast。
     await markAllRead();
   };

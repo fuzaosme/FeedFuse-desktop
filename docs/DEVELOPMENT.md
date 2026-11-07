@@ -11,8 +11,10 @@ FeedFuse-rust/
 │   ├── stage-sidecar.mjs     # 把运行时摊到 src-tauri/resources（打包前必跑）
 │   └── fetch-node.mjs        # 下载 Node 运行时到 src-tauri/binaries
 ├── server/                   # 后端（Node + Hono + node:sqlite）
-│   ├── build.mjs             # esbuild → dist/server.mjs + dist/schema.sql + dist/en-zh.json
-│   ├── assets/en-zh.json     # 内置核心词库（约 2.9 万条，查词主路径）
+│   ├── build.mjs             # esbuild → dist/server.mjs + dist/schema.sql + dist/builtin/ + dist/phrases.json
+│   ├── assets/builtin/       # WordNet 英英释义（按首字母分片，约 15.2 万条）
+│   ├── assets/phrases.json   # 词组词典（8165 条）
+│   ├── assets/en-zh.json     # 中英核心词库（2.9 万条，中文释义 + 音标）
 │   └── src/
 │       ├── main.ts           # 入口：openDb → createApp → serve → 打印握手行
 │       ├── config.ts         # 环境变量与默认值
@@ -49,7 +51,7 @@ FeedFuse-rust/
 | `pnpm dev:server` | 只起后端（`tsx watch src/main.ts`），端口默认随机 |
 | `pnpm dev:web` | 只起前端（Vite 5173，`/api` 代理到 9559） |
 | `pnpm build` | `build:server` + `build:web` |
-| `pnpm build:server` | esbuild 打 `server/dist/server.mjs`，并复制 `schema.sql` 与内置词典 `en-zh.json` |
+| `pnpm build:server` | esbuild 打 `server/dist/server.mjs`，并复制 `schema.sql`、`builtin/` 与 `phrases.json` |
 | `pnpm build:web` | `tsc --noEmit && vite build` → `web/dist` |
 | `pnpm typecheck` | 两个包的 `tsc --noEmit` |
 | `pnpm test` | 单元测试（`tsx --test`，Node 内置 runner，无额外依赖）；同时跑 `server/test/` 与 `web/test/` 的纯函数用例 |

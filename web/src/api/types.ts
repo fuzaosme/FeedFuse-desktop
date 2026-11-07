@@ -164,10 +164,16 @@ export interface LoggingSettings {
   minLevel: 'error' | 'warning' | 'info';
 }
 
+export interface DictionarySettings {
+  /** 已停用的**内置**词典 id；内置词典不在数据库里，开关状态只能存在设置里。 */
+  disabledIds: string[];
+}
+
 export interface Settings {
   general: GeneralSettings;
   ai: AiSettings;
   rss: RssSettings;
+  dictionaries: DictionarySettings;
   logging: LoggingSettings;
 }
 

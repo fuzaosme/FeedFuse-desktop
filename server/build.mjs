@@ -1,4 +1,4 @@
-import { copyFile, mkdir } from 'node:fs/promises';
+import { cp, copyFile, mkdir } from 'node:fs/promises';
 import { build } from 'esbuild';
 
 /**
@@ -29,4 +29,7 @@ await mkdir('dist', { recursive: true });
 await copyFile('src/db/schema.sql', 'dist/schema.sql');
 
 // 内置词典随 sidecar 一起分发：运行时按 import.meta.url 就近读取（见 domain/builtinDictionary.ts）。
+// builtin/ 是按首字母分片的词库目录，必须整目录拷贝；漏一片就等于那批词查不到。
 await copyFile('assets/en-zh.json', 'dist/en-zh.json');
+await cp('assets/builtin', 'dist/builtin', { recursive: true });
+await copyFile('assets/phrases.json', 'dist/phrases.json');
